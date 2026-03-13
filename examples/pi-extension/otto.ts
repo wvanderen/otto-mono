@@ -1337,24 +1337,67 @@ export default function otto(pi: ExtensionAPI) {
     updateUi(ctx);
   };
 
-  const continueWithFreshSession = (ctx: ExtensionContext): void => {
+  const continueWithFreshSession = async (
+    ctx: ExtensionContext,
+  ): Promise<void> => {
     setContinuation(
       "fresh-session",
       "Fresh-session mode is enabled; rotate the session before the next workflow step.",
     );
-    state.awaitingCommand = CONTINUE_COMMAND;
-    state.awaitingPrompt = CONTINUE_COMMAND;
+    state.awaitingCommand = null;
+    state.awaitingPrompt = null;
     state.awaitingToken = null;
     state.awaitingStarted = false;
     state.lastCommandMode = "accept-default";
     state.lastDecisionReason = state.lastContinuationReason;
-    persistState("queue-session-hop-command");
+    persistState("direct-session-hop-attempt");
     updateUi(ctx);
 
-    const options = ctx.isIdle()
-      ? undefined
-      : { deliverAs: "followUp" as const };
-    pi.sendUserMessage(CONTINUE_COMMAND, options);
+    const maybeNewSession = (
+      ctx as ExtensionContext & {
+        newSession?: () => Promise<{ cancelled?: boolean }>;
+      }
+    ).newSession;
+
+    if (typeof maybeNewSession !== "function") {
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          "Pi new-session API is unavailable; falling back to same-session compacted iteration.",
+          "warning",
+        );
+      }
+      compactAndQueueNextStep(ctx);
+      return;
+    }
+
+    try {
+      const result = await maybeNewSession.call(ctx);
+      if (result.cancelled) {
+        stopRun(
+          ctx,
+          "error",
+          "Session rotation cancelled.",
+          "session-rotation-cancelled",
+        );
+        return;
+      }
+
+      persistState("session-rotated-direct");
+      updateUi(ctx);
+      queueWorkflowCommand(
+        ctx,
+        NEXT_STEP_COMMAND,
+        "Fresh session created successfully via Pi's native new-session flow; continue with the next-step workflow.",
+      );
+    } catch {
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          "Fresh-session rotation failed; falling back to same-session compacted iteration.",
+          "warning",
+        );
+      }
+      compactAndQueueNextStep(ctx);
+    }
   };
 
   const compactAndQueueNextStep = (ctx: ExtensionContext): void => {
@@ -1397,7 +1440,7 @@ export default function otto(pi: ExtensionAPI) {
 
   const queueNextStepIteration = (ctx: ExtensionContext): void => {
     if (state.freshSessionBetweenSteps) {
-      continueWithFreshSession(ctx);
+      void continueWithFreshSession(ctx);
       return;
     }
     compactAndQueueNextStep(ctx);
