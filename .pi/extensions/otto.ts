@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { relative, resolve } from "node:path";
 
 import type {
   ExtensionAPI,
@@ -7,12 +7,22 @@ import type {
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 
+import {
+  classifyAction,
+  classifyOutcome,
+  inspectEvidence,
+  parseIssueId,
+  parseIssueTitle,
+  resolveWorkflowResult,
+  RESULT_PREFIX,
+  shortText,
+} from "./otto-result.mjs";
+
 const INIT_COMMAND = "/bmad:td:initialize";
 const NEXT_STEP_COMMAND = "/bmad:td:next-step";
 const VALIDATE_PRD_COMMAND = "/bmad:td:validate-prd";
 const CONTINUE_COMMAND = "/otto-continue";
 const STATE_ENTRY_TYPE = "otto-state";
-
 type WorkflowCommand =
   | "/bmad:td:initialize"
   | "/bmad:td:next-step"
@@ -23,6 +33,36 @@ type WorkflowCommand =
   | "/bmad:bmm:code-review";
 
 type WorkflowMode = "accept-default" | "party";
+type OperatingMode = "delivery" | "explore" | "custom";
+type ApprovalPolicy = "strict" | "balanced" | "draft";
+type DriftPolicy = "validate" | "continue" | "pause";
+type EvidencePolicy = "strict" | "balanced" | "relaxed";
+type SteeringPolicy = "steady" | "interactive";
+type ActionKind =
+  | "review"
+  | "implementation"
+  | "requirements-validation"
+  | "epic-workflow"
+  | "unknown";
+type OutcomeKind =
+  | "completed"
+  | "blocked"
+  | "needs-input"
+  | "no-work"
+  | "failed"
+  | "unknown";
+type ConfidenceKind = "high" | "medium" | "low" | "unknown";
+type ContinuityKind =
+  | "none"
+  | "fresh-session"
+  | "same-session-compacted"
+  | "compaction-fallback";
+type ResultSourceKind =
+  | "structured"
+  | "heuristic"
+  | "malformed"
+  | "mismatched"
+  | null;
 
 interface AutopilotPreferences {
   defaults?: {
@@ -31,10 +71,27 @@ interface AutopilotPreferences {
     maxFailures?: number;
     freshSessionBetweenSteps?: boolean;
   };
+  autonomy?: {
+    mode?: OperatingMode;
+    policies?: {
+      approval?: ApprovalPolicy;
+      drift?: DriftPolicy;
+      evidence?: EvidencePolicy;
+      steering?: SteeringPolicy;
+    };
+  };
   workflows?: {
     defaultMode?: WorkflowMode;
     commandModes?: Partial<Record<WorkflowCommand, WorkflowMode>>;
   };
+}
+
+interface ResolvedAutonomy {
+  mode: OperatingMode;
+  approval: ApprovalPolicy;
+  drift: DriftPolicy;
+  evidence: EvidencePolicy;
+  steering: SteeringPolicy;
 }
 
 interface LoadedPreferences {
@@ -49,6 +106,24 @@ const CONFIG_PATHS = [
   ".bmad-autopilot.json",
   ".pi/bmad-autopilot.json",
 ];
+const PROJECT_PREFERENCES_PATH = ".pi/otto.json";
+const PREFERENCE_ONBOARDING_HINT =
+  "Otto is using built-in defaults. Run /otto-onboard to save project preferences.";
+const ONBOARDING_MARKER_ENTRY_TYPE = "otto-onboarding-hint";
+const ONBOARDING_MARKER_VERSION = 1;
+
+type PreferenceChoice<T> = {
+  label: string;
+  value: T;
+};
+
+type WorkflowPreferenceOverride = WorkflowMode | "inherit";
+type PolicyOverride<T extends string> = T | "inherit";
+
+interface PreferenceCandidate {
+  label: string;
+  path: string;
+}
 
 type Phase =
   | "idle"
@@ -58,11 +133,41 @@ type Phase =
   | "stopped"
   | "completed"
   | "error";
+type StopCode =
+  | "none"
+  | "manual-stop"
+  | "paused-for-input"
+  | "blocked-workflow"
+  | "session-rotation-cancelled"
+  | "failure-budget-reached"
+  | "max-iterations-reached"
+  | "queue-drained"
+  | "queue-drained-in-review-only"
+  | "validate-prd-finished"
+  | "validate-prd-in-review-only";
+type QueueState =
+  | "unknown"
+  | "ready"
+  | "in-review-only"
+  | "drained-first-pass"
+  | "drained-ready-for-validation"
+  | "drained-final";
 
 interface Checkpoint {
   iteration: number;
   entryId: string;
   command: string;
+  issueId: string | null;
+  issueTitle: string | null;
+  action: ActionKind | null;
+  outcome: OutcomeKind | null;
+  confidence: ConfidenceKind;
+  queueState: QueueState;
+  continuity: ContinuityKind;
+  continuityReason: string | null;
+  alert: string | null;
+  evidenceSignals: string[];
+  reason: string | null;
   summary: string;
   timestamp: number;
 }
@@ -77,11 +182,25 @@ interface RunState {
   failures: number;
   maxFailures: number;
   lastCommand: string | null;
-  lastAction: string | null;
+  lastAction: ActionKind | null;
+  lastDecisionReason: string | null;
+  lastOutcome: OutcomeKind | null;
+  lastConfidence: ConfidenceKind;
+  lastResultSource: ResultSourceKind;
+  lastEvidenceAlert: string | null;
+  lastEvidenceSignals: string[];
+  lastCommandMode: WorkflowMode;
+  lastAutonomyMode: OperatingMode;
+  lastPolicySummary: string;
+  lastContinuation: ContinuityKind;
+  lastContinuationReason: string | null;
   lastIssueId: string | null;
+  lastIssueTitle: string | null;
   lastError: string | null;
   lastProgressAt: number;
   stopReason: string | null;
+  stopCode: StopCode;
+  queueState: QueueState;
   emptyQueuePasses: number;
   checkpoints: Checkpoint[];
   awaitingCommand: string | null;
@@ -102,10 +221,25 @@ const newRunState = (): RunState => ({
   maxFailures: 3,
   lastCommand: null,
   lastAction: null,
+  lastDecisionReason: null,
+  lastOutcome: null,
+  lastConfidence: "unknown",
+  lastResultSource: null,
+  lastEvidenceAlert: null,
+  lastEvidenceSignals: [],
+  lastCommandMode: "accept-default",
+  lastAutonomyMode: "delivery",
+  lastPolicySummary:
+    "approval=strict, drift=validate, evidence=strict, steering=steady",
+  lastContinuation: "none",
+  lastContinuationReason: null,
   lastIssueId: null,
+  lastIssueTitle: null,
   lastError: null,
   lastProgressAt: Date.now(),
   stopReason: null,
+  stopCode: "none",
+  queueState: "unknown",
   emptyQueuePasses: 0,
   checkpoints: [],
   awaitingCommand: null,
@@ -118,26 +252,206 @@ const newRunState = (): RunState => ({
 const newWorkflowToken = (): string =>
   `otto-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-const shortText = (text: string, max = 120): string => {
-  const squashed = text.replace(/\s+/g, " ").trim();
-  if (squashed.length <= max) return squashed;
-  return `${squashed.slice(0, max - 3)}...`;
+const MODE_DEFAULTS: Record<
+  Exclude<OperatingMode, "custom">,
+  AutopilotPreferences
+> = {
+  delivery: {
+    defaults: {
+      skipInit: false,
+      maxIterations: 25,
+      maxFailures: 3,
+      freshSessionBetweenSteps: true,
+    },
+    autonomy: {
+      mode: "delivery",
+      policies: {
+        approval: "strict",
+        drift: "validate",
+        evidence: "strict",
+        steering: "steady",
+      },
+    },
+    workflows: {
+      defaultMode: "accept-default",
+      commandModes: {
+        "/bmad:bmm:create-architecture": "party",
+        "/bmad:bmm:create-epics-and-stories": "party",
+        "/bmad:td:validate-prd": "party",
+      },
+    },
+  },
+  explore: {
+    defaults: {
+      skipInit: true,
+      maxIterations: 15,
+      maxFailures: 5,
+      freshSessionBetweenSteps: false,
+    },
+    autonomy: {
+      mode: "explore",
+      policies: {
+        approval: "draft",
+        drift: "continue",
+        evidence: "relaxed",
+        steering: "interactive",
+      },
+    },
+    workflows: {
+      defaultMode: "party",
+      commandModes: {
+        "/bmad:td:validate-prd": "party",
+      },
+    },
+  },
 };
 
-const classifyAction = (assistantText: string): string => {
-  const text = assistantText.toLowerCase();
-  if (text.includes("review") || text.includes("approve")) return "review";
-  if (text.includes("implement") || text.includes("in_progress"))
-    return "implementation";
-  if (text.includes("validate-prd") || text.includes("requirements trace"))
-    return "requirements-validation";
+const policySummary = (autonomy: ResolvedAutonomy): string =>
+  `approval=${autonomy.approval}, drift=${autonomy.drift}, evidence=${autonomy.evidence}, steering=${autonomy.steering}`;
+
+const resolveAutonomy = (
+  preferences: AutopilotPreferences,
+): ResolvedAutonomy => {
+  const mode = preferences.autonomy?.mode ?? "delivery";
+  const policyDefaults =
+    mode === "explore"
+      ? MODE_DEFAULTS.explore.autonomy?.policies
+      : MODE_DEFAULTS.delivery.autonomy?.policies;
+
+  return {
+    mode,
+    approval:
+      preferences.autonomy?.policies?.approval ??
+      policyDefaults?.approval ??
+      "strict",
+    drift:
+      preferences.autonomy?.policies?.drift ??
+      policyDefaults?.drift ??
+      "validate",
+    evidence:
+      preferences.autonomy?.policies?.evidence ??
+      policyDefaults?.evidence ??
+      "strict",
+    steering:
+      preferences.autonomy?.policies?.steering ??
+      policyDefaults?.steering ??
+      "steady",
+  };
+};
+
+const checkpointLabel = (checkpoint: Checkpoint): string => {
+  const checkpointIssue = currentIssueLabel(
+    checkpoint.issueId,
+    checkpoint.issueTitle,
+  );
+  const parts = [
+    `#${checkpoint.iteration}`,
+    new Date(checkpoint.timestamp).toLocaleTimeString(),
+    checkpointIssue !== "-" ? checkpointIssue : checkpoint.command,
+    checkpoint.action ?? checkpoint.command,
+    checkpoint.confidence,
+  ];
+
+  if (checkpoint.outcome) parts.push(checkpoint.outcome);
+  if (checkpoint.continuity !== "none") {
+    parts.push(checkpoint.continuity.replaceAll("-", " "));
+  }
+  if (checkpoint.alert) parts.push(checkpoint.alert);
+  return shortText(`${parts.join(" | ")} | ${checkpoint.summary}`, 140);
+};
+
+const continuityLabel = (
+  continuity: ContinuityKind,
+  reason: string | null,
+): string => {
+  const base =
+    continuity === "fresh-session"
+      ? "fresh session"
+      : continuity === "same-session-compacted"
+        ? "same session (compacted)"
+        : continuity === "compaction-fallback"
+          ? "fallback after compaction failure"
+          : "none";
+
+  return reason ? `${base} - ${reason}` : base;
+};
+
+const currentIssueLabel = (
+  issueId: string | null,
+  issueTitle: string | null,
+  maxLength = 80,
+): string => {
+  if (!issueId) return "-";
+  return issueTitle
+    ? shortText(`${issueId} - ${issueTitle}`, maxLength)
+    : issueId;
+};
+
+const statusLabel = (state: RunState, alert: string | null): string => {
+  if (!state.active) return `Otto: ${state.phase}`;
+
+  const segments = [
+    currentIssueLabel(state.lastIssueId, state.lastIssueTitle, 34),
+    state.lastAction ?? state.phase,
+    state.lastConfidence,
+  ];
+
+  if (alert) segments.push(shortText(alert, 18));
+  return shortText(`Otto: ${segments.join(" | ")}`, 60);
+};
+
+const widgetReasonLabel = (reason: string | null): string =>
+  reason ? shortText(reason, 96) : "-";
+
+const checkpointContextLabel = (checkpoint: Checkpoint): string => {
+  const issue = currentIssueLabel(
+    checkpoint.issueId,
+    checkpoint.issueTitle,
+    42,
+  );
+  return issue !== "-" ? issue : shortText(checkpoint.command, 42);
+};
+
+const mergeEvidenceSignals = (
+  current: string[],
+  additions: string[],
+): string[] => [...new Set([...current, ...additions])];
+
+const stateAlert = (runState: RunState): string | null => {
+  if (runState.lastEvidenceAlert) {
+    return runState.lastEvidenceAlert;
+  }
+
+  if (runState.lastContinuation === "compaction-fallback") {
+    return "continuity fallback";
+  }
+
   if (
-    text.includes("epic") ||
-    text.includes("create-story") ||
-    text.includes("code-review")
-  )
-    return "epic-workflow";
-  return "unknown";
+    runState.lastResultSource === "malformed" ||
+    runState.lastResultSource === "mismatched"
+  ) {
+    return "result drift";
+  }
+
+  if (runState.lastConfidence === "low") {
+    return "weak evidence";
+  }
+
+  if (runState.failures > 0) {
+    return `recovered failures ${runState.failures}/${runState.maxFailures}`;
+  }
+
+  return null;
+};
+
+const checkpointActionOptions = (checkpoint: Checkpoint): string[] => {
+  const context = checkpointContextLabel(checkpoint);
+  const summary = shortText(checkpoint.summary, 56);
+  return [
+    `Navigate here | ${context} | ${summary}`,
+    `Fork from here | ${context} | ${summary}`,
+    `Show details | ${checkpoint.action ?? checkpoint.command} | ${checkpoint.confidence}`,
+  ];
 };
 
 const extractAssistantText = (messages: unknown[]): string => {
@@ -160,11 +474,6 @@ const extractAssistantText = (messages: unknown[]): string => {
     .map((part) => part.text as string);
 
   return lines.join("\n").trim();
-};
-
-const parseIssueId = (text: string): string | null => {
-  const match = text.match(/\btd-[a-z0-9]+\b/i);
-  return match ? match[0] : null;
 };
 
 const parseStartArgs = (
@@ -206,38 +515,505 @@ const parseStartArgs = (
   return parsed;
 };
 
-const loadAutopilotPreferences = (): LoadedPreferences => {
+const mergePreferences = (
+  base: AutopilotPreferences,
+  incoming: AutopilotPreferences,
+): AutopilotPreferences => ({
+  defaults: {
+    ...(base.defaults ?? {}),
+    ...(incoming.defaults ?? {}),
+  },
+  autonomy: {
+    ...(base.autonomy ?? {}),
+    ...(incoming.autonomy ?? {}),
+    policies: {
+      ...(base.autonomy?.policies ?? {}),
+      ...(incoming.autonomy?.policies ?? {}),
+    },
+  },
+  workflows: {
+    ...(base.workflows ?? {}),
+    ...(incoming.workflows ?? {}),
+    commandModes: {
+      ...(base.workflows?.commandModes ?? {}),
+      ...(incoming.workflows?.commandModes ?? {}),
+    },
+  },
+});
+
+const normalizePreferences = (
+  preferences: AutopilotPreferences,
+): AutopilotPreferences => {
+  const defaults = preferences.defaults ?? {};
+  const autonomy = preferences.autonomy ?? {};
+  const workflows = preferences.workflows ?? {};
+  const normalizedMode =
+    autonomy.mode === "delivery" ||
+    autonomy.mode === "explore" ||
+    autonomy.mode === "custom"
+      ? autonomy.mode
+      : undefined;
+  const commandModes = Object.fromEntries(
+    Object.entries(workflows.commandModes ?? {}).filter(
+      ([, mode]) => mode === "accept-default" || mode === "party",
+    ),
+  ) as Partial<Record<WorkflowCommand, WorkflowMode>>;
+  const policies = autonomy.policies ?? {};
+  const normalizedPolicies = {
+    approval:
+      policies.approval === "strict" ||
+      policies.approval === "balanced" ||
+      policies.approval === "draft"
+        ? policies.approval
+        : undefined,
+    drift:
+      policies.drift === "validate" ||
+      policies.drift === "continue" ||
+      policies.drift === "pause"
+        ? policies.drift
+        : undefined,
+    evidence:
+      policies.evidence === "strict" ||
+      policies.evidence === "balanced" ||
+      policies.evidence === "relaxed"
+        ? policies.evidence
+        : undefined,
+    steering:
+      policies.steering === "steady" || policies.steering === "interactive"
+        ? policies.steering
+        : undefined,
+  };
+
+  const normalized: AutopilotPreferences = {};
+
+  if (Object.keys(defaults).length > 0) {
+    normalized.defaults = {
+      ...(defaults.skipInit !== undefined
+        ? { skipInit: defaults.skipInit }
+        : {}),
+      ...(defaults.maxIterations !== undefined
+        ? { maxIterations: defaults.maxIterations }
+        : {}),
+      ...(defaults.maxFailures !== undefined
+        ? { maxFailures: defaults.maxFailures }
+        : {}),
+      ...(defaults.freshSessionBetweenSteps !== undefined
+        ? { freshSessionBetweenSteps: defaults.freshSessionBetweenSteps }
+        : {}),
+    };
+  }
+
+  if (
+    normalizedMode !== undefined ||
+    normalizedPolicies.approval !== undefined ||
+    normalizedPolicies.drift !== undefined ||
+    normalizedPolicies.evidence !== undefined ||
+    normalizedPolicies.steering !== undefined
+  ) {
+    normalized.autonomy = {
+      ...(normalizedMode !== undefined ? { mode: normalizedMode } : {}),
+      ...(normalizedPolicies.approval !== undefined ||
+      normalizedPolicies.drift !== undefined ||
+      normalizedPolicies.evidence !== undefined ||
+      normalizedPolicies.steering !== undefined
+        ? {
+            policies: {
+              ...(normalizedPolicies.approval !== undefined
+                ? { approval: normalizedPolicies.approval }
+                : {}),
+              ...(normalizedPolicies.drift !== undefined
+                ? { drift: normalizedPolicies.drift }
+                : {}),
+              ...(normalizedPolicies.evidence !== undefined
+                ? { evidence: normalizedPolicies.evidence }
+                : {}),
+              ...(normalizedPolicies.steering !== undefined
+                ? { steering: normalizedPolicies.steering }
+                : {}),
+            },
+          }
+        : {}),
+    };
+  }
+
+  if (
+    workflows.defaultMode !== undefined ||
+    Object.keys(commandModes).length > 0
+  ) {
+    normalized.workflows = {
+      ...(workflows.defaultMode !== undefined
+        ? { defaultMode: workflows.defaultMode }
+        : {}),
+      ...(Object.keys(commandModes).length > 0 ? { commandModes } : {}),
+    };
+  }
+
+  return normalized;
+};
+
+const preferenceCandidates = (): PreferenceCandidate[] => {
+  const cwd = process.cwd();
   const envPath =
     process.env.OTTO_CONFIG?.trim() ??
     process.env.BMAD_AUTOPILOT_CONFIG?.trim();
-  const candidates = [
-    ...(envPath ? [resolve(envPath)] : []),
-    ...CONFIG_PATHS.map((filePath) => resolve(process.cwd(), filePath)),
-  ];
 
-  for (const filePath of candidates) {
-    if (!existsSync(filePath)) continue;
+  return [
+    ...CONFIG_PATHS.map((filePath) => ({
+      label: filePath,
+      path: resolve(cwd, filePath),
+    })),
+    ...(envPath
+      ? [
+          {
+            label: process.env.OTTO_CONFIG?.trim()
+              ? `OTTO_CONFIG (${envPath})`
+              : `BMAD_AUTOPILOT_CONFIG (${envPath})`,
+            path: resolve(envPath),
+          },
+        ]
+      : []),
+  ];
+};
+
+const displayPath = (filePath: string): string => {
+  const rel = relative(process.cwd(), filePath);
+  return rel && !rel.startsWith("..") ? rel : filePath;
+};
+
+const loadAutopilotPreferences = (): LoadedPreferences => {
+  let preferences: AutopilotPreferences = {};
+  let source: string | null = null;
+  const warnings: string[] = [];
+
+  for (const candidate of preferenceCandidates()) {
+    if (!existsSync(candidate.path)) continue;
     try {
-      const raw = readFileSync(filePath, "utf8");
+      const raw = readFileSync(candidate.path, "utf8");
       const parsed = JSON.parse(raw) as AutopilotPreferences;
-      return {
-        preferences: parsed && typeof parsed === "object" ? parsed : {},
-        source: filePath,
-        error: null,
-      };
+      preferences = mergePreferences(
+        preferences,
+        parsed && typeof parsed === "object" ? parsed : {},
+      );
+      source = candidate.label;
     } catch (error) {
-      return {
-        preferences: {},
-        source: filePath,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown preference parse error",
-      };
+      warnings.push(
+        `${candidate.label} could not be loaded (${error instanceof Error ? error.message : "Unknown preference parse error"})`,
+      );
     }
   }
 
-  return { preferences: {}, source: null, error: null };
+  return {
+    preferences: normalizePreferences(preferences),
+    source,
+    error: warnings.length > 0 ? warnings.join("; ") : null,
+  };
+};
+
+const saveAutopilotPreferences = (
+  preferences: AutopilotPreferences,
+): { path: string; preferences: AutopilotPreferences } => {
+  const filePath = resolve(process.cwd(), PROJECT_PREFERENCES_PATH);
+  mkdirSync(resolve(process.cwd(), ".pi"), { recursive: true });
+  const normalized = normalizePreferences(preferences);
+  writeFileSync(filePath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  return { path: filePath, preferences: normalized };
+};
+
+const onboardingChoice = async <T>(
+  ctx: ExtensionCommandContext,
+  title: string,
+  choices: PreferenceChoice<T>[],
+): Promise<T | null> => {
+  const selected = await ctx.ui.select(
+    title,
+    choices.map((choice) => choice.label),
+  );
+  if (!selected) return null;
+  return choices.find((choice) => choice.label === selected)?.value ?? null;
+};
+
+const onboardingWorkflowOverride = async (
+  ctx: ExtensionCommandContext,
+  command: WorkflowCommand,
+  title: string,
+): Promise<WorkflowPreferenceOverride | null> =>
+  onboardingChoice(ctx, title, [
+    {
+      label: `Inherit default | ${command}`,
+      value: "inherit",
+    },
+    {
+      label: `Accept default | ${command}`,
+      value: "accept-default",
+    },
+    {
+      label: `Party mode | ${command}`,
+      value: "party",
+    },
+  ]);
+
+const onboardingPolicyOverride = async <T extends string>(
+  ctx: ExtensionCommandContext,
+  title: string,
+  inheritLabel: string,
+  options: PreferenceChoice<T>[],
+): Promise<PolicyOverride<T> | null> =>
+  onboardingChoice<PolicyOverride<T>>(ctx, title, [
+    {
+      label: `Inherit mode default | ${inheritLabel}`,
+      value: "inherit",
+    },
+    ...options,
+  ]);
+
+const onboardingSummary = (preferences: AutopilotPreferences): string[] => {
+  const autonomy = resolveAutonomy(preferences);
+  const overrides = Object.entries(preferences.workflows?.commandModes ?? {});
+  return [
+    `Operating mode: ${autonomy.mode}`,
+    `Policies: ${policySummary(autonomy)}`,
+    `Skip init: ${preferences.defaults?.skipInit ? "yes" : "no"}`,
+    `Max iterations: ${preferences.defaults?.maxIterations ?? 25}`,
+    `Max failures: ${preferences.defaults?.maxFailures ?? 3}`,
+    `Fresh session between steps: ${preferences.defaults?.freshSessionBetweenSteps === false ? "no" : "yes"}`,
+    `Default mode: ${preferences.workflows?.defaultMode ?? "accept-default"}`,
+    `Overrides: ${overrides.length > 0 ? overrides.map(([command, mode]) => `${command}=${mode}`).join(", ") : "none"}`,
+  ];
+};
+
+const runOnboarding = async (
+  ctx: ExtensionCommandContext,
+): Promise<{ path: string; preferences: AutopilotPreferences } | null> => {
+  if (!ctx.hasUI) {
+    ctx.ui.notify("/otto-onboard requires interactive mode.", "error");
+    return null;
+  }
+
+  const current = loadAutopilotPreferences().preferences;
+  const profile = await onboardingChoice(ctx, "Otto profile", [
+    {
+      label: "Delivery | strict approval, validate on drift",
+      value: MODE_DEFAULTS.delivery,
+    },
+    {
+      label: "Explore | interactive steering, lighter evidence gate",
+      value: MODE_DEFAULTS.explore,
+    },
+    {
+      label: "Custom | tune policies and workflow steering",
+      value: {
+        ...MODE_DEFAULTS.delivery,
+        autonomy: {
+          ...MODE_DEFAULTS.delivery.autonomy,
+          mode: "custom" as OperatingMode,
+        },
+      },
+    },
+    {
+      label: "Current config | start from what Otto loads now",
+      value: current,
+    },
+  ]);
+  if (!profile) return null;
+
+  const profileMode = profile.autonomy?.mode ?? "delivery";
+
+  const skipInit = await onboardingChoice(ctx, "Initialize before looping", [
+    { label: "Run initialize first", value: false },
+    { label: "Skip initialize", value: true },
+  ]);
+  if (skipInit === null) return null;
+
+  const freshSessionBetweenSteps = await onboardingChoice(
+    ctx,
+    "Session continuity between next-step turns",
+    [
+      { label: "Fresh session between steps", value: true },
+      { label: "Stay in same session", value: false },
+    ],
+  );
+  if (freshSessionBetweenSteps === null) return null;
+
+  const maxIterations = await onboardingChoice(ctx, "Max iterations per run", [
+    { label: "10 iterations", value: 10 },
+    { label: "25 iterations", value: 25 },
+    { label: "40 iterations", value: 40 },
+    { label: "60 iterations", value: 60 },
+  ]);
+  if (maxIterations === null) return null;
+
+  const maxFailures = await onboardingChoice(
+    ctx,
+    "Max recovered failures before stopping",
+    [
+      { label: "2 failures", value: 2 },
+      { label: "3 failures", value: 3 },
+      { label: "5 failures", value: 5 },
+    ],
+  );
+  if (maxFailures === null) return null;
+
+  const defaultMode = await onboardingChoice(ctx, "Default workflow mode", [
+    {
+      label: "Accept default | Otto runs through",
+      value: "accept-default" as WorkflowMode,
+    },
+    {
+      label: "Party mode | Otto pauses at major transitions",
+      value: "party" as WorkflowMode,
+    },
+  ]);
+  if (!defaultMode) return null;
+
+  const approvalPolicy = await onboardingPolicyOverride<ApprovalPolicy>(
+    ctx,
+    "Approval policy",
+    profileMode,
+    [
+      {
+        label: "Strict approval | require real target-surface evidence",
+        value: "strict",
+      },
+      {
+        label: "Balanced approval | allow partial evidence with callouts",
+        value: "balanced",
+      },
+      {
+        label: "Draft approval | exploratory proof is acceptable",
+        value: "draft",
+      },
+    ],
+  );
+  if (!approvalPolicy) return null;
+
+  const driftPolicy = await onboardingPolicyOverride<DriftPolicy>(
+    ctx,
+    "Drift handling",
+    profileMode,
+    [
+      {
+        label: "Validate on drift | route to validate-prd immediately",
+        value: "validate",
+      },
+      {
+        label: "Continue on drift | warn and keep moving",
+        value: "continue",
+      },
+      {
+        label: "Pause on drift | hand control back to operator",
+        value: "pause",
+      },
+    ],
+  );
+  if (!driftPolicy) return null;
+
+  const evidencePolicy = await onboardingPolicyOverride<EvidencePolicy>(
+    ctx,
+    "Evidence threshold",
+    profileMode,
+    [
+      {
+        label: "Strict evidence | validate any weak completion signal",
+        value: "strict",
+      },
+      {
+        label: "Balanced evidence | validate meaningful gaps",
+        value: "balanced",
+      },
+      {
+        label: "Relaxed evidence | reserve validation for severe drift",
+        value: "relaxed",
+      },
+    ],
+  );
+  if (!evidencePolicy) return null;
+
+  const steeringPolicy = await onboardingPolicyOverride<SteeringPolicy>(
+    ctx,
+    "Workflow steering",
+    profileMode,
+    [
+      {
+        label: "Steady steering | minimize pauses and prompts",
+        value: "steady",
+      },
+      {
+        label: "Interactive steering | surface pivots and tradeoffs early",
+        value: "interactive",
+      },
+    ],
+  );
+  if (!steeringPolicy) return null;
+
+  const architectureMode = await onboardingWorkflowOverride(
+    ctx,
+    "/bmad:bmm:create-architecture",
+    "Create-architecture workflow mode",
+  );
+  if (!architectureMode) return null;
+
+  const epicsMode = await onboardingWorkflowOverride(
+    ctx,
+    "/bmad:bmm:create-epics-and-stories",
+    "Create-epics-and-stories workflow mode",
+  );
+  if (!epicsMode) return null;
+
+  const validatePrdMode = await onboardingWorkflowOverride(
+    ctx,
+    "/bmad:td:validate-prd",
+    "Validate-PRD workflow mode",
+  );
+  if (!validatePrdMode) return null;
+
+  const preferences = normalizePreferences({
+    ...profile,
+    defaults: {
+      ...(profile.defaults ?? {}),
+      skipInit,
+      maxIterations,
+      maxFailures,
+      freshSessionBetweenSteps,
+    },
+    autonomy: {
+      ...(profile.autonomy ?? {}),
+      mode: profileMode,
+      policies: {
+        ...((profile.autonomy?.policies ?? {}) as NonNullable<
+          AutopilotPreferences["autonomy"]
+        >["policies"]),
+        ...(approvalPolicy !== "inherit" ? { approval: approvalPolicy } : {}),
+        ...(driftPolicy !== "inherit" ? { drift: driftPolicy } : {}),
+        ...(evidencePolicy !== "inherit" ? { evidence: evidencePolicy } : {}),
+        ...(steeringPolicy !== "inherit" ? { steering: steeringPolicy } : {}),
+      },
+    },
+    workflows: {
+      ...(profile.workflows ?? {}),
+      defaultMode,
+      commandModes: {
+        ...(architectureMode !== "inherit"
+          ? { "/bmad:bmm:create-architecture": architectureMode }
+          : {}),
+        ...(epicsMode !== "inherit"
+          ? { "/bmad:bmm:create-epics-and-stories": epicsMode }
+          : {}),
+        ...(validatePrdMode !== "inherit"
+          ? { "/bmad:td:validate-prd": validatePrdMode }
+          : {}),
+      },
+    },
+  });
+
+  const saved = saveAutopilotPreferences(preferences);
+  ctx.ui.notify(
+    [
+      `Saved Otto preferences to ${displayPath(saved.path)}.`,
+      ...onboardingSummary(saved.preferences),
+    ].join("\n"),
+    "success",
+  );
+  return saved;
 };
 
 const workflowModeFor = (
@@ -246,13 +1022,54 @@ const workflowModeFor = (
 ): WorkflowMode =>
   preferences.workflows?.commandModes?.[command] ??
   preferences.workflows?.defaultMode ??
-  "accept-default";
+  (resolveAutonomy(preferences).mode === "explore"
+    ? "party"
+    : "accept-default");
+
+const evidenceDiscipline = (autonomy: ResolvedAutonomy): string[] => {
+  const lines = [
+    "- Follow Otto's evidence hierarchy when judging completion: 1) real runtime behavior, 2) direct PRD or requirement validation, 3) human review of the working product, 4) automated tests and checks, 5) workflow or artifact completion signals.",
+    "- Call out any simulated, mocked, placeholder, synthetic, or artifact-only success signals instead of treating them as equivalent to real target-surface evidence.",
+    "- Include a machine-checkable evidence section in the response covering validation context, changed files, gate results, artifact references or transcripts, requirement mapping, risks, and follow-ups.",
+  ];
+
+  if (autonomy.approval === "strict") {
+    lines.push(
+      "- Treat approval-grade implementation or review work as strict approval: require explicit requirement mapping, real target-surface evidence when applicable, and a clear weak-evidence callout when runtime proof is missing.",
+    );
+  } else if (autonomy.approval === "balanced") {
+    lines.push(
+      "- Treat approval-grade work as balanced approval: map changed behavior to requirements, distinguish fully evidenced behavior from partial evidence, and call out what still needs stronger runtime proof.",
+    );
+  } else {
+    lines.push(
+      "- Treat approval claims as draft-grade: keep the requirement mapping, but you may leave work explicitly in exploratory or low-confidence status when runtime proof is still thin.",
+    );
+  }
+
+  if (autonomy.evidence === "strict") {
+    lines.push(
+      "- Use a strict evidence threshold: if completion signals look strong but target-surface evidence is weak, lower confidence, mark the result as weak evidence, and steer toward validation or follow-up work.",
+    );
+  } else if (autonomy.evidence === "balanced") {
+    lines.push(
+      "- Use a balanced evidence threshold: accept partial progress, but explicitly separate runtime-confirmed behavior from artifact-only or inferred behavior.",
+    );
+  } else {
+    lines.push(
+      "- Use a relaxed evidence threshold for exploration: keep weak-evidence callouts visible, but avoid overstating certainty and reserve hard escalation for clear drift or placeholder-heavy delivery.",
+    );
+  }
+
+  return lines;
+};
 
 const workflowPrompt = (
   command: WorkflowCommand,
   preferences: AutopilotPreferences,
   token: string,
 ): string => {
+  const autonomy = resolveAutonomy(preferences);
   const workflow =
     command === "/bmad:td:initialize"
       ? {
@@ -314,9 +1131,21 @@ const workflowPrompt = (
     "- Follow workflow instructions directly and perform actions, not just explain them.",
     "- Prefer accept-default behavior and avoid unnecessary prompts.",
     `- ${workflow.extra}`,
-    `- Workflow token: ${token}. Keep it intact if you reference this run in your response.`,
+    `- Operating mode: ${autonomy.mode}. Policy bundle: ${policySummary(autonomy)}.`,
+    `- Workflow token: ${token}. Carry it through this run and include it unchanged in the final OTTO_RESULT JSON as key token.`,
     "- Report concrete actions taken, artifacts touched, and td outcomes.",
+    ...evidenceDiscipline(autonomy),
+    `- End your final response with exactly one line starting with ${RESULT_PREFIX} followed by valid single-line JSON with keys: command, token, action, issueId, issueTitle, outcome, confidence, summary. Use null for issueTitle when no td title applies.`,
+    "- Use action from: review, implementation, requirements-validation, epic-workflow, unknown.",
+    "- Use outcome from: completed, blocked, needs-input, no-work, failed, unknown.",
+    "- Use confidence from: high, medium, low, unknown.",
   ];
+
+  if (autonomy.steering === "interactive") {
+    executionRequirements.push(
+      "- Use interactive steering: surface major pivots, assumptions, and tradeoffs early, especially before architecture, planning, or validation decisions that could redirect the run.",
+    );
+  }
 
   if (workflowModeFor(command, preferences) === "party") {
     executionRequirements.push(
@@ -366,6 +1195,7 @@ const matchesQueuedWorkflowPrompt = (
 export default function otto(pi: ExtensionAPI) {
   let state = newRunState();
   let turnHadToolError = false;
+  let onboardingHintShown = false;
 
   const persistState = (reason: string): void => {
     pi.appendEntry(STATE_ENTRY_TYPE, {
@@ -378,26 +1208,54 @@ export default function otto(pi: ExtensionAPI) {
   const updateUi = (ctx: ExtensionContext): void => {
     if (!ctx.hasUI) return;
 
-    const status = state.active
-      ? `Otto: ${state.phase} #${state.iteration}/${state.maxIterations}`
-      : `Otto: ${state.phase}`;
+    const alert = stateAlert(state);
+    const currentIssue = currentIssueLabel(
+      state.lastIssueId,
+      state.lastIssueTitle,
+    );
+
+    const status = statusLabel(state, alert);
 
     ctx.ui.setStatus("otto", status);
 
     const widgetLines = [
+      `Status: ${state.phase} | ${state.lastAction ?? "-"} | ${state.lastConfidence}`,
       `Run: ${state.runId ?? "none"}`,
+      `Current td: ${currentIssue}`,
+      `Action: ${state.lastAction ?? "-"}`,
+      `Why: ${widgetReasonLabel(state.lastDecisionReason)}`,
+      `Operating mode: ${state.lastAutonomyMode}`,
+      `Policies: ${state.lastPolicySummary}`,
+      `Workflow mode: ${state.lastCommandMode}`,
+      `Confidence: ${state.lastConfidence}`,
+      `Continuity: ${continuityLabel(state.lastContinuation, state.lastContinuationReason)}`,
       `Phase: ${state.phase}`,
       `Iteration: ${state.iteration}/${state.maxIterations}`,
       `Failures: ${state.failures}/${state.maxFailures}`,
-      `Queue drain passes: ${state.emptyQueuePasses}`,
       `Last command: ${state.lastCommand ?? "-"}`,
-      `Last action: ${state.lastAction ?? "-"}`,
-      `Last issue: ${state.lastIssueId ?? "-"}`,
+      `Last outcome: ${state.lastOutcome ?? "-"}`,
+      `Result source: ${state.lastResultSource ?? "-"}`,
+      `Queue state: ${state.queueState}`,
+      `Stop code: ${state.stopCode}`,
+      `Queue drain passes: ${state.emptyQueuePasses}`,
       `Session hop: ${state.freshSessionBetweenSteps ? "on" : "off"}`,
     ];
 
+    if (alert) widgetLines.push(`Alert: ${alert}`);
+    if (state.lastEvidenceSignals.length > 0) {
+      widgetLines.push(`Evidence: ${state.lastEvidenceSignals.join(", ")}`);
+    }
     if (state.stopReason) widgetLines.push(`Reason: ${state.stopReason}`);
     ctx.ui.setWidget("otto", widgetLines);
+  };
+
+  const setContinuation = (
+    continuity: ContinuityKind,
+    reason: string,
+  ): void => {
+    state.lastContinuation = continuity;
+    state.lastContinuationReason = shortText(reason, 160);
+    state.lastProgressAt = Date.now();
   };
 
   const restoreState = (ctx: ExtensionContext): void => {
@@ -417,22 +1275,50 @@ export default function otto(pi: ExtensionAPI) {
       };
     }
     updateUi(ctx);
+
+    if (onboardingHintShown || !ctx.hasUI) return;
+    const hasPreferences =
+      loadAutopilotPreferences().source !== null ||
+      branch.some(
+        (entry) =>
+          entry.type === "custom" &&
+          entry.customType === ONBOARDING_MARKER_ENTRY_TYPE &&
+          typeof entry.data === "object" &&
+          entry.data !== null &&
+          (entry.data as { version?: number }).version ===
+            ONBOARDING_MARKER_VERSION,
+      );
+    if (hasPreferences) return;
+
+    onboardingHintShown = true;
+    ctx.ui.notify(PREFERENCE_ONBOARDING_HINT, "info");
+  };
+
+  const markOnboardingHintSeen = (): void => {
+    onboardingHintShown = true;
+    pi.appendEntry(ONBOARDING_MARKER_ENTRY_TYPE, {
+      version: ONBOARDING_MARKER_VERSION,
+      seenAt: Date.now(),
+    });
   };
 
   const queueWorkflowCommand = (
     ctx: ExtensionContext,
     command: string,
+    reason = "Operator requested workflow execution.",
   ): void => {
     const { preferences, source, error } = loadAutopilotPreferences();
     if (error) {
       state.lastError = `Preference load failed (${source}): ${error}`;
     }
+    const autonomy = resolveAutonomy(preferences);
     const token = newWorkflowToken();
     const prompt = workflowPrompt(
       command as WorkflowCommand,
       preferences,
       token,
     );
+    const mode = workflowModeFor(command as WorkflowCommand, preferences);
     const options = ctx.isIdle()
       ? undefined
       : { deliverAs: "followUp" as const };
@@ -442,67 +1328,76 @@ export default function otto(pi: ExtensionAPI) {
     state.awaitingToken = token;
     state.awaitingStarted = false;
     state.lastCommand = command;
+    state.lastCommandMode = mode;
+    state.lastAutonomyMode = autonomy.mode;
+    state.lastPolicySummary = policySummary(autonomy);
+    state.lastDecisionReason = shortText(reason, 160);
     state.lastProgressAt = Date.now();
     persistState(`queued:${command}`);
     updateUi(ctx);
   };
 
-  const continueWithFreshSession = (ctx: ExtensionContext): void => {
+  const continueWithFreshSession = async (
+    ctx: ExtensionContext,
+  ): Promise<void> => {
+    setContinuation(
+      "fresh-session",
+      "Fresh-session mode is enabled; rotate the session before the next workflow step.",
+    );
+    state.awaitingCommand = null;
+    state.awaitingPrompt = null;
+    state.awaitingToken = null;
+    state.awaitingStarted = false;
+    state.lastCommandMode = "accept-default";
+    state.lastDecisionReason = state.lastContinuationReason;
+    persistState("direct-session-hop-attempt");
+    updateUi(ctx);
+
     const maybeNewSession = (
-      ctx as unknown as {
+      ctx as ExtensionContext & {
         newSession?: () => Promise<{ cancelled?: boolean }>;
       }
     ).newSession;
 
-    if (typeof maybeNewSession === "function") {
-      state.awaitingCommand = null;
-      state.awaitingPrompt = null;
-      state.awaitingToken = null;
-      state.awaitingStarted = false;
-      persistState("direct-session-hop-attempt");
-      updateUi(ctx);
-
-      void maybeNewSession
-        .call(ctx)
-        .then((result) => {
-          if (!state.active || state.phase !== "running") return;
-          if (result?.cancelled) {
-            stopRun(ctx, "error", "Session rotation cancelled.");
-            return;
-          }
-          persistState("session-rotated-direct");
-          updateUi(ctx);
-          queueWorkflowCommand(ctx, NEXT_STEP_COMMAND);
-        })
-        .catch(() => {
-          if (!state.active || state.phase !== "running") return;
-          state.awaitingCommand = CONTINUE_COMMAND;
-          state.awaitingPrompt = CONTINUE_COMMAND;
-          state.awaitingToken = null;
-          state.awaitingStarted = false;
-          persistState("queue-session-hop-fallback-command");
-          updateUi(ctx);
-
-          const options = ctx.isIdle()
-            ? undefined
-            : { deliverAs: "followUp" as const };
-          pi.sendUserMessage(CONTINUE_COMMAND, options);
-        });
-
+    if (typeof maybeNewSession !== "function") {
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          "Pi new-session API is unavailable; falling back to same-session compacted iteration.",
+          "warning",
+        );
+      }
+      compactAndQueueNextStep(ctx);
       return;
     }
 
-    state.awaitingCommand = CONTINUE_COMMAND;
-    state.awaitingPrompt = CONTINUE_COMMAND;
-    state.awaitingToken = null;
-    state.awaitingStarted = false;
-    persistState("queue-session-hop");
-    updateUi(ctx);
+    try {
+      const result = await maybeNewSession.call(ctx);
+      if (result.cancelled) {
+        stopRun(
+          ctx,
+          "error",
+          "Session rotation cancelled.",
+          "session-rotation-cancelled",
+        );
+        return;
+      }
 
-    const options = ctx.isIdle()
-      ? undefined
-      : { deliverAs: "followUp" as const };
-    pi.sendUserMessage(CONTINUE_COMMAND, options);
+      persistState("session-rotated-direct");
+      updateUi(ctx);
+      queueWorkflowCommand(
+        ctx,
+        NEXT_STEP_COMMAND,
+        "Fresh session created successfully via Pi's native new-session flow; continue with the next-step workflow.",
+      );
+    } catch {
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          "Fresh-session rotation failed; falling back to same-session compacted iteration.",
+          "warning",
+        );
+      }
+      compactAndQueueNextStep(ctx);
+    }
   };
 
   const compactAndQueueNextStep = (ctx: ExtensionContext): void => {
@@ -518,18 +1413,34 @@ export default function otto(pi: ExtensionAPI) {
         "Preserve only concise Otto continuity: current run phase, latest td issue/action, validation status, unresolved blockers, and immediate next-step context.",
       onComplete: () => {
         if (!state.active || state.phase !== "running") return;
-        queueWorkflowCommand(ctx, NEXT_STEP_COMMAND);
+        setContinuation(
+          "same-session-compacted",
+          "Compaction completed; continue the loop in the current session.",
+        );
+        queueWorkflowCommand(
+          ctx,
+          NEXT_STEP_COMMAND,
+          "Compaction completed; continue the loop in the current session.",
+        );
       },
       onError: () => {
         if (!state.active || state.phase !== "running") return;
-        queueWorkflowCommand(ctx, NEXT_STEP_COMMAND);
+        setContinuation(
+          "compaction-fallback",
+          "Compaction fallback triggered; continue the loop without a fresh session.",
+        );
+        queueWorkflowCommand(
+          ctx,
+          NEXT_STEP_COMMAND,
+          "Compaction fallback triggered; continue the loop without a fresh session.",
+        );
       },
     });
   };
 
   const queueNextStepIteration = (ctx: ExtensionContext): void => {
     if (state.freshSessionBetweenSteps) {
-      continueWithFreshSession(ctx);
+      void continueWithFreshSession(ctx);
       return;
     }
     compactAndQueueNextStep(ctx);
@@ -556,10 +1467,12 @@ export default function otto(pi: ExtensionAPI) {
     ctx: ExtensionContext,
     phase: Phase,
     reason: string,
+    stopCode: StopCode,
   ): void => {
     state.active = false;
     state.phase = phase;
     state.stopReason = reason;
+    state.stopCode = stopCode;
     state.awaitingCommand = null;
     state.awaitingPrompt = null;
     state.awaitingToken = null;
@@ -573,6 +1486,30 @@ export default function otto(pi: ExtensionAPI) {
         phase === "error" ? "error" : "info",
       );
     }
+  };
+
+  const registerLoopFailure = (
+    ctx: ExtensionContext,
+    message: string,
+    phase: Phase = "error",
+  ): boolean => {
+    state.failures += 1;
+    state.lastError = message;
+    state.lastProgressAt = Date.now();
+
+    if (state.failures >= state.maxFailures) {
+      stopRun(
+        ctx,
+        phase,
+        `${message} Failure budget reached (${state.failures}/${state.maxFailures}).`,
+        "failure-budget-reached",
+      );
+      return true;
+    }
+
+    persistState(`failure:${phase}`);
+    updateUi(ctx);
+    return false;
   };
 
   const registerWorkflowCommand = (
@@ -645,6 +1582,7 @@ export default function otto(pi: ExtensionAPI) {
     if (!state.awaitingStarted) return;
 
     const completedCommand = state.awaitingCommand;
+    const completedToken = state.awaitingToken;
     state.awaitingStarted = false;
 
     if (completedCommand === CONTINUE_COMMAND) {
@@ -659,14 +1597,56 @@ export default function otto(pi: ExtensionAPI) {
     }
 
     const assistantText = extractAssistantText(event.messages as unknown[]);
-    const summary = shortText(assistantText || "No assistant summary.");
+    const resolvedWorkflowResult = resolveWorkflowResult(
+      assistantText,
+      completedCommand,
+      completedToken,
+    );
+    const workflowResult = resolvedWorkflowResult.result;
+    const summary = resolvedWorkflowResult.summary;
+    const evidence = inspectEvidence(
+      assistantText,
+      workflowResult,
+      resolveAutonomy(loadAutopilotPreferences().preferences).evidence,
+    );
     const entryId = ctx.sessionManager.getLeafId();
+    const issueId = workflowResult?.issueId ?? parseIssueId(assistantText);
+    const issueTitle =
+      workflowResult?.issueTitle ?? parseIssueTitle(assistantText, issueId);
+
+    const previousIssueId = state.lastIssueId;
+    state.lastIssueId = issueId ?? state.lastIssueId;
+    state.lastIssueTitle =
+      issueTitle ?? (issueId === previousIssueId ? state.lastIssueTitle : null);
+    state.lastAction = workflowResult?.action ?? classifyAction(assistantText);
+    state.lastOutcome =
+      workflowResult?.outcome ?? classifyOutcome(assistantText);
+    state.lastConfidence = evidence.effectiveConfidence;
+    state.lastResultSource = resolvedWorkflowResult.resultSource;
+    state.lastEvidenceAlert = evidence.alert;
+    state.lastEvidenceSignals = evidence.signals;
+    state.lastProgressAt = Date.now();
+    state.lastError = resolvedWorkflowResult.error;
+
+    const alert = stateAlert(state);
+    const checkpointIndex = state.checkpoints.length;
 
     if (entryId) {
       state.checkpoints.push({
         iteration: state.iteration,
         entryId,
         command: completedCommand,
+        issueId,
+        issueTitle,
+        action: workflowResult?.action ?? classifyAction(assistantText),
+        outcome: workflowResult?.outcome ?? classifyOutcome(assistantText),
+        confidence: evidence.effectiveConfidence,
+        queueState: state.queueState,
+        continuity: state.lastContinuation,
+        continuityReason: state.lastContinuationReason,
+        alert,
+        evidenceSignals: evidence.signals,
+        reason: state.lastDecisionReason,
         summary,
         timestamp: Date.now(),
       });
@@ -681,25 +1661,50 @@ export default function otto(pi: ExtensionAPI) {
       );
     }
 
-    state.lastIssueId = parseIssueId(assistantText) ?? state.lastIssueId;
-    state.lastAction = classifyAction(assistantText);
-    state.lastProgressAt = Date.now();
+    if (resolvedWorkflowResult.error) {
+      if (registerLoopFailure(ctx, resolvedWorkflowResult.error)) return;
+    }
 
     if (turnHadToolError) {
-      state.failures += 1;
-      if (state.failures >= state.maxFailures) {
-        stopRun(
+      if (registerLoopFailure(ctx, state.lastError ?? "A tool failed.")) return;
+    }
+
+    if (workflowResult?.outcome === "failed") {
+      if (
+        registerLoopFailure(
           ctx,
-          "error",
-          `Failure budget reached (${state.failures}/${state.maxFailures}).`,
-        );
+          `Workflow reported failure for ${completedCommand}.`,
+        )
+      )
         return;
-      }
+    }
+
+    if (workflowResult?.outcome === "needs-input") {
+      stopRun(
+        ctx,
+        "paused",
+        `Workflow requested user input for ${completedCommand}.`,
+        "paused-for-input",
+      );
+      return;
+    }
+
+    if (workflowResult?.outcome === "blocked") {
+      stopRun(
+        ctx,
+        "paused",
+        `Workflow reported blocked state for ${completedCommand}.`,
+        "blocked-workflow",
+      );
+      return;
     }
 
     if (completedCommand === INIT_COMMAND) {
       state.emptyQueuePasses = 0;
+      state.queueState = "ready";
       state.phase = "running";
+      state.lastError = null;
+      state.stopCode = "none";
       persistState("init-complete");
       if (ctx.hasUI) {
         ctx.ui.notify(
@@ -717,6 +1722,7 @@ export default function otto(pi: ExtensionAPI) {
         ctx,
         "completed",
         `Reached max iterations (${state.maxIterations}).`,
+        "max-iterations-reached",
       );
       return;
     }
@@ -725,22 +1731,81 @@ export default function otto(pi: ExtensionAPI) {
     let hasInReview = false;
     try {
       const workState = await hasRemainingWork();
+      const autonomy = resolveAutonomy(loadAutopilotPreferences().preferences);
       workLeft = workState.hasImmediateWork;
       hasInReview = workState.hasInReview;
-    } catch (error) {
-      state.failures += 1;
-      state.lastError =
-        error instanceof Error ? error.message : "Unknown td check failure";
-      if (state.failures >= state.maxFailures) {
-        stopRun(ctx, "error", "Unable to query td queue state.");
-        return;
+      state.queueState = workLeft
+        ? "ready"
+        : hasInReview
+          ? "in-review-only"
+          : state.emptyQueuePasses >= 1
+            ? "drained-ready-for-validation"
+            : "drained-first-pass";
+      state.lastError = null;
+
+      if (state.lastOutcome === "no-work" && (workLeft || hasInReview)) {
+        const tdDriftReason = workLeft
+          ? "Workflow reported no-work, but td still has ready or reviewable issues."
+          : "Workflow reported no-work, but td still has in-review issues.";
+        const evidenceSignals = mergeEvidenceSignals(
+          state.lastEvidenceSignals,
+          ["td-drift", "result-drift"],
+        );
+        state.lastEvidenceSignals = evidenceSignals;
+        state.lastEvidenceAlert = "td drift";
+        state.lastConfidence = "low";
+        state.lastDecisionReason = shortText(tdDriftReason, 160);
+
+        const checkpoint = state.checkpoints[checkpointIndex];
+        if (checkpoint) {
+          checkpoint.evidenceSignals = evidenceSignals;
+          checkpoint.alert = "td drift";
+          checkpoint.confidence = "low";
+          checkpoint.reason = state.lastDecisionReason;
+        }
+
+        if (ctx.hasUI) {
+          ctx.ui.notify(tdDriftReason, "warning");
+        }
+
+        if (
+          autonomy.drift === "pause" &&
+          completedCommand !== VALIDATE_PRD_COMMAND
+        ) {
+          stopRun(
+            ctx,
+            "paused",
+            `${tdDriftReason} Drift policy is pause.`,
+            "paused-for-input",
+          );
+          return;
+        }
+
+        if (
+          autonomy.drift === "validate" &&
+          completedCommand !== VALIDATE_PRD_COMMAND
+        ) {
+          state.queueState = "drained-ready-for-validation";
+          persistState("loop-run-validate-prd-td-drift");
+          queueWorkflowCommand(
+            ctx,
+            VALIDATE_PRD_COMMAND,
+            `${tdDriftReason} Drift policy is validate, so check product truth before continuing.`,
+          );
+          return;
+        }
       }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unknown td check failure";
+      if (registerLoopFailure(ctx, message)) return;
       workLeft = true;
     }
 
     if (!workLeft) {
       if (hasInReview && state.freshSessionBetweenSteps) {
         state.emptyQueuePasses = 0;
+        state.queueState = "in-review-only";
         persistState("loop-continue-in-review-session-hop");
         queueNextStepIteration(ctx);
         return;
@@ -748,13 +1813,29 @@ export default function otto(pi: ExtensionAPI) {
 
       state.emptyQueuePasses += 1;
 
+      if (
+        evidence.shouldValidate &&
+        completedCommand !== VALIDATE_PRD_COMMAND
+      ) {
+        state.queueState = "drained-ready-for-validation";
+        persistState("loop-run-validate-prd-evidence-gap");
+        queueWorkflowCommand(
+          ctx,
+          VALIDATE_PRD_COMMAND,
+          `Completion evidence was weak (${evidence.signals.join(", ")}); validate against the PRD before stopping.`,
+        );
+        return;
+      }
+
       if (completedCommand === VALIDATE_PRD_COMMAND) {
+        state.queueState = hasInReview ? "in-review-only" : "drained-final";
         stopRun(
           ctx,
           "completed",
           hasInReview
             ? "Only in-review issues remain after PRD validation and session hopping is disabled."
             : "No reviewable, ready, epic-maintenance, or PRD gap work remains.",
+          hasInReview ? "validate-prd-in-review-only" : "validate-prd-finished",
         );
         return;
       }
@@ -764,17 +1845,24 @@ export default function otto(pi: ExtensionAPI) {
         (completedCommand === NEXT_STEP_COMMAND &&
           state.lastAction === "epic-workflow")
       ) {
+        state.queueState = "drained-first-pass";
         persistState("loop-continue-drained-queue-sweep");
         queueNextStepIteration(ctx);
         return;
       }
 
+      state.queueState = "drained-ready-for-validation";
       persistState("loop-run-validate-prd");
-      queueWorkflowCommand(ctx, VALIDATE_PRD_COMMAND);
+      queueWorkflowCommand(
+        ctx,
+        VALIDATE_PRD_COMMAND,
+        "Ready/reviewable work is drained; validate against the PRD and reopen any real gaps.",
+      );
       return;
     }
 
     state.emptyQueuePasses = 0;
+    state.queueState = "ready";
 
     persistState("loop-continue");
     queueNextStepIteration(ctx);
@@ -811,13 +1899,22 @@ export default function otto(pi: ExtensionAPI) {
 
     const result = await ctx.newSession();
     if (result.cancelled) {
-      stopRun(ctx, "error", "Session rotation cancelled.");
+      stopRun(
+        ctx,
+        "error",
+        "Session rotation cancelled.",
+        "session-rotation-cancelled",
+      );
       return;
     }
 
     persistState("session-rotated");
     updateUi(ctx);
-    queueWorkflowCommand(ctx, NEXT_STEP_COMMAND);
+    queueWorkflowCommand(
+      ctx,
+      NEXT_STEP_COMMAND,
+      "Fresh session created successfully; continue with the next-step workflow.",
+    );
   };
 
   registerOttoCommand(
@@ -933,11 +2030,19 @@ export default function otto(pi: ExtensionAPI) {
       awaitingPrompt: null,
       awaitingToken: null,
       awaitingStarted: false,
+      stopCode: "none",
+      queueState: skipInit ? "ready" : "unknown",
     };
 
     persistState("start");
     updateUi(ctx);
-    queueWorkflowCommand(ctx, initialCommand);
+    queueWorkflowCommand(
+      ctx,
+      initialCommand,
+      skipInit
+        ? "Skip initialize and begin directly with next-step based on existing workspace state."
+        : "Start by initializing BMAD and td context before entering the next-step loop.",
+    );
     if (source && ctx.hasUI) {
       ctx.ui.notify(
         error
@@ -956,21 +2061,63 @@ export default function otto(pi: ExtensionAPI) {
     startHandler,
   );
 
+  const onboardHandler = async (
+    _args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> => {
+    const saved = await runOnboarding(ctx);
+    if (!saved) return;
+    markOnboardingHintSeen();
+  };
+
+  registerOttoCommand(
+    "otto-onboard",
+    "bmad-auto-onboard",
+    "Set Otto project preferences with an onboarding flow",
+    onboardHandler,
+  );
+
   const statusHandler = async (
     _args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
+    const loadedPreferences = loadAutopilotPreferences();
     const status = [
       `Run: ${state.runId ?? "none"}`,
+      `Preferences: ${loadedPreferences.source ?? "built-in defaults"}`,
+      `Current td: ${currentIssueLabel(state.lastIssueId, state.lastIssueTitle)}`,
+      `Action: ${state.lastAction ?? "-"}`,
+      `Why: ${widgetReasonLabel(state.lastDecisionReason)}`,
+      `Operating mode: ${state.lastAutonomyMode}`,
+      `Policies: ${state.lastPolicySummary}`,
+      `Workflow mode: ${state.lastCommandMode}`,
       `Phase: ${state.phase}`,
       `Active: ${state.active ? "yes" : "no"}`,
       `Iteration: ${state.iteration}/${state.maxIterations}`,
       `Failures: ${state.failures}/${state.maxFailures}`,
       `Last command: ${state.lastCommand ?? "-"}`,
-      `Last issue: ${state.lastIssueId ?? "-"}`,
+      `Last outcome: ${state.lastOutcome ?? "-"}`,
+      `Confidence: ${state.lastConfidence}`,
+      `Evidence: ${
+        state.lastEvidenceSignals.length > 0
+          ? state.lastEvidenceSignals.join(", ")
+          : "-"
+      }`,
+      `Continuity: ${continuityLabel(state.lastContinuation, state.lastContinuationReason)}`,
+      `Result source: ${state.lastResultSource ?? "-"}`,
+      `Queue state: ${state.queueState}`,
+      `Stop code: ${state.stopCode}`,
+      `Stop reason: ${state.stopReason ?? "-"}`,
     ].join("\n");
 
-    ctx.ui.notify(status, "info");
+    const detailLines = [status];
+    const alert = stateAlert(state);
+    if (alert) detailLines.push(`Alert: ${alert}`);
+    if (loadedPreferences.error) {
+      detailLines.push(`Preference warning: ${loadedPreferences.error}`);
+    }
+
+    ctx.ui.notify(detailLines.join("\n"), "info");
     updateUi(ctx);
   };
 
@@ -1013,6 +2160,7 @@ export default function otto(pi: ExtensionAPI) {
 
     state.phase = "running";
     state.stopReason = null;
+    state.stopCode = "none";
     state.awaitingCommand = NEXT_STEP_COMMAND;
     state.awaitingPrompt = null;
     state.awaitingToken = null;
@@ -1020,7 +2168,11 @@ export default function otto(pi: ExtensionAPI) {
     persistState("resume");
     updateUi(ctx);
 
-    queueWorkflowCommand(ctx, NEXT_STEP_COMMAND);
+    queueWorkflowCommand(
+      ctx,
+      NEXT_STEP_COMMAND,
+      "Resume the loop from a paused state and continue with the next-step workflow.",
+    );
     ctx.ui.notify("Otto resumed.", "success");
   };
 
@@ -1040,7 +2192,7 @@ export default function otto(pi: ExtensionAPI) {
       return;
     }
     const reason = args.trim() || "Stopped manually.";
-    stopRun(ctx, "stopped", reason);
+    stopRun(ctx, "stopped", reason, "manual-stop");
   };
 
   registerOttoCommand(
@@ -1064,10 +2216,7 @@ export default function otto(pi: ExtensionAPI) {
     }
 
     const recent = [...state.checkpoints].reverse().slice(0, 30);
-    const options = recent.map(
-      (checkpoint) =>
-        `#${checkpoint.iteration} | ${new Date(checkpoint.timestamp).toLocaleTimeString()} | ${checkpoint.command} | ${checkpoint.summary}`,
-    );
+    const options = recent.map((checkpoint) => checkpointLabel(checkpoint));
 
     const selected = await ctx.ui.select("Otto checkpoints", options);
     if (!selected) return;
@@ -1076,13 +2225,39 @@ export default function otto(pi: ExtensionAPI) {
     if (index < 0) return;
     const checkpoint = recent[index];
 
-    const action = await ctx.ui.select("Checkpoint action", [
-      "Navigate here",
-      "Fork from here",
-    ]);
+    const action = await ctx.ui.select(
+      "Checkpoint action",
+      checkpointActionOptions(checkpoint),
+    );
     if (!action) return;
 
-    if (action === "Navigate here") {
+    if (action.startsWith("Show details")) {
+      ctx.ui.notify(
+        [
+          `Checkpoint: #${checkpoint.iteration}`,
+          `Time: ${new Date(checkpoint.timestamp).toLocaleString()}`,
+          `td: ${currentIssueLabel(checkpoint.issueId, checkpoint.issueTitle)}`,
+          `Command: ${checkpoint.command}`,
+          `Action: ${checkpoint.action ?? "-"}`,
+          `Outcome: ${checkpoint.outcome ?? "-"}`,
+          `Confidence: ${checkpoint.confidence}`,
+          `Continuity: ${continuityLabel(checkpoint.continuity, checkpoint.continuityReason)}`,
+          `Queue state: ${checkpoint.queueState}`,
+          `Alert: ${checkpoint.alert ?? "-"}`,
+          `Evidence: ${
+            checkpoint.evidenceSignals.length > 0
+              ? checkpoint.evidenceSignals.join(", ")
+              : "-"
+          }`,
+          `Why: ${widgetReasonLabel(checkpoint.reason)}`,
+          `Summary: ${checkpoint.summary}`,
+        ].join("\n"),
+        "info",
+      );
+      return;
+    }
+
+    if (action.startsWith("Navigate here")) {
       await ctx.navigateTree(checkpoint.entryId, {
         summarize: true,
         label: `dive:${state.runId ?? "run"}:iter-${checkpoint.iteration}`,
