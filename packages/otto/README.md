@@ -55,6 +55,11 @@ Otto is built on top of:
   handoffs, and review flow
 - Pi as the runtime that hosts the Otto package and skill resources
 
+Otto full mode also expects a Pi build that exposes native
+`newSession()` support to extension command handlers. When that API is
+missing, Otto falls back to same-session compaction and cannot preserve
+its strongest review-separation guarantees.
+
 ## Installation
 
 Install from npm into Pi:
@@ -198,6 +203,7 @@ Working docs:
 - `docs/otto-dna-roadmap.md`
 - `docs/otto-roadmap-4-8-weeks.md`
 - `docs/otto-evaluation-scorecard.md`
+- `docs/otto-pi-session-capability-matrix.md`
 
 If you want the fuller product direction behind this roadmap, start
 with `docs/otto-manifesto.md`.

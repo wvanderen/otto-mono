@@ -120,3 +120,5 @@ The packaged Otto extension ships an `otto` skill resource for Pi agents.
 - By default, Otto hops to a fresh session between `next-step` iterations using Pi's native new-session flow (the same behavior as `/new`). Use `--same-session` to disable.
 - If Pi cannot rotate into a fresh session, Otto falls back to same-session compacted continuation for that cycle.
 - When only `in-review` issues remain, Otto continues with a session hop (default mode) to allow cross-session review separation.
+- Otto full mode requires a Pi build that exposes `ctx.newSession()` to extension command handlers; Pi does not currently expose an extension-safe in-place clear-context API.
+- See `docs/otto-pi-session-capability-matrix.md` for the audited runtime/build matrix and minimum capability guidance.
