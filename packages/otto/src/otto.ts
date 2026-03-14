@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
+import { promisify } from "node:util";
 
 import type {
   ExtensionAPI,
@@ -111,6 +113,9 @@ const PREFERENCE_ONBOARDING_HINT =
   "Otto is using built-in defaults. Run /otto-onboard to save project preferences.";
 const ONBOARDING_MARKER_ENTRY_TYPE = "otto-onboarding-hint";
 const ONBOARDING_MARKER_VERSION = 1;
+const execFileAsync = promisify(execFile);
+const tdIssueTitleCache = new Map<string, string | null>();
+const tdIssueTitleRequests = new Map<string, Promise<string | null>>();
 
 type PreferenceChoice<T> = {
   label: string;
@@ -407,15 +412,18 @@ const widgetReasonLabel = (reason: string | null): string =>
 
 const buildWidgetLines = (
   state: RunState,
-  currentIssue: string,
+  issueId: string | null,
+  issueTitle: string | null,
   alert: string | null,
 ): string[] => {
   const lines = [
     `Status: ${state.phase} | ${state.lastAction ?? "-"} | ${state.lastConfidence}`,
     `Run: ${state.runId ?? "none"}`,
-    `Current td: ${currentIssue}`,
+    `Current td: ${issueId ?? "-"}`,
     `Why: ${widgetReasonLabel(state.lastDecisionReason)}`,
   ];
+
+  if (issueTitle) lines.splice(3, 0, `td name: ${shortText(issueTitle, 96)}`);
 
   if (alert) lines.push(`Alert: ${shortText(alert, 96)}`);
   if (state.stopReason)
@@ -483,6 +491,41 @@ const stateAlert = (runState: RunState): string | null => {
   }
 
   return null;
+};
+
+const parseTdIssueTitle = (stdout: string): string | null => {
+  try {
+    const parsed = JSON.parse(stdout) as { title?: unknown };
+    return typeof parsed.title === "string" && parsed.title.trim().length > 0
+      ? shortText(parsed.title, 120)
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const getTdIssueTitle = async (issueId: string): Promise<string | null> => {
+  if (tdIssueTitleCache.has(issueId)) {
+    return tdIssueTitleCache.get(issueId) ?? null;
+  }
+
+  const inFlight = tdIssueTitleRequests.get(issueId);
+  if (inFlight) return inFlight;
+
+  const request = execFileAsync("td", ["show", issueId, "--json"], {
+    timeout: 5000,
+    maxBuffer: 1024 * 1024,
+  })
+    .then(({ stdout }) => parseTdIssueTitle(stdout))
+    .catch(() => null)
+    .then((title) => {
+      tdIssueTitleCache.set(issueId, title);
+      tdIssueTitleRequests.delete(issueId);
+      return title;
+    });
+
+  tdIssueTitleRequests.set(issueId, request);
+  return request;
 };
 
 const checkpointActionOptions = (checkpoint: Checkpoint): string[] => {
@@ -1250,16 +1293,24 @@ export default function otto(pi: ExtensionAPI) {
     if (!ctx.hasUI) return;
 
     const alert = stateAlert(state);
-    const currentIssue = currentIssueLabel(
-      state.lastIssueId,
-      state.lastIssueTitle,
-    );
-
     const status = statusLabel(state, alert);
 
     ctx.ui.setStatus("otto", status);
 
-    ctx.ui.setWidget("otto", buildWidgetLines(state, currentIssue, alert));
+    ctx.ui.setWidget(
+      "otto",
+      buildWidgetLines(state, state.lastIssueId, state.lastIssueTitle, alert),
+    );
+
+    if (state.lastIssueId && !state.lastIssueTitle) {
+      const requestedIssueId = state.lastIssueId;
+      void getTdIssueTitle(requestedIssueId).then((issueTitle) => {
+        if (!issueTitle || state.lastIssueId !== requestedIssueId) return;
+        if (state.lastIssueTitle === issueTitle) return;
+        state.lastIssueTitle = issueTitle;
+        updateUi(ctx);
+      });
+    }
   };
 
   const setContinuation = (
