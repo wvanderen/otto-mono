@@ -205,6 +205,7 @@ Working docs:
 - `docs/otto-evaluation-scorecard.md`
 - `docs/otto-pi-session-capability-matrix.md`
 - `docs/otto-session-reset-support-plan.md`
+- `docs/otto-runtime-session-detection-design.md`
 
 If you want the fuller product direction behind this roadmap, start
 with `docs/otto-manifesto.md`.
