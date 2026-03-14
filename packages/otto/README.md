@@ -204,6 +204,7 @@ Working docs:
 - `docs/otto-roadmap-4-8-weeks.md`
 - `docs/otto-evaluation-scorecard.md`
 - `docs/otto-pi-session-capability-matrix.md`
+- `docs/otto-session-reset-support-plan.md`
 
 If you want the fuller product direction behind this roadmap, start
 with `docs/otto-manifesto.md`.
