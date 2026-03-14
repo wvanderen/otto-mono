@@ -400,8 +400,49 @@ const statusLabel = (state: RunState, alert: string | null): string => {
   return shortText(`Otto: ${segments.join(" | ")}`, 60);
 };
 
+const MAX_OTTO_WIDGET_LINES = 10;
+
 const widgetReasonLabel = (reason: string | null): string =>
   reason ? shortText(reason, 96) : "-";
+
+const buildWidgetLines = (
+  state: RunState,
+  currentIssue: string,
+  alert: string | null,
+): string[] => {
+  const lines = [
+    `Status: ${state.phase} | ${state.lastAction ?? "-"} | ${state.lastConfidence}`,
+    `Run: ${state.runId ?? "none"}`,
+    `Current td: ${currentIssue}`,
+    `Why: ${widgetReasonLabel(state.lastDecisionReason)}`,
+  ];
+
+  if (alert) lines.push(`Alert: ${shortText(alert, 96)}`);
+  if (state.stopReason)
+    lines.push(`Reason: ${shortText(state.stopReason, 96)}`);
+
+  lines.push(
+    `Iteration: ${state.iteration}/${state.maxIterations} | Failures: ${state.failures}/${state.maxFailures}`,
+    `Continuity: ${continuityLabel(state.lastContinuation, state.lastContinuationReason)}`,
+  );
+
+  if (state.lastEvidenceSignals.length > 0) {
+    lines.push(
+      `Evidence: ${shortText(state.lastEvidenceSignals.join(", "), 96)}`,
+    );
+  }
+
+  lines.push(
+    `Outcome: ${state.lastOutcome ?? "-"} | Result: ${state.lastResultSource ?? "-"}`,
+    `Queue: ${state.queueState} | Stop: ${state.stopCode} | Drain: ${state.emptyQueuePasses}`,
+    `Mode: ${state.lastAutonomyMode} | Workflow: ${state.lastCommandMode}`,
+    `Policies: ${shortText(state.lastPolicySummary, 96)}`,
+    `Command: ${shortText(state.lastCommand ?? "-", 96)}`,
+    `Session hop: ${state.freshSessionBetweenSteps ? "on" : "off"}`,
+  );
+
+  return lines.slice(0, MAX_OTTO_WIDGET_LINES);
+};
 
 const checkpointContextLabel = (checkpoint: Checkpoint): string => {
   const issue = currentIssueLabel(
@@ -1218,35 +1259,7 @@ export default function otto(pi: ExtensionAPI) {
 
     ctx.ui.setStatus("otto", status);
 
-    const widgetLines = [
-      `Status: ${state.phase} | ${state.lastAction ?? "-"} | ${state.lastConfidence}`,
-      `Run: ${state.runId ?? "none"}`,
-      `Current td: ${currentIssue}`,
-      `Action: ${state.lastAction ?? "-"}`,
-      `Why: ${widgetReasonLabel(state.lastDecisionReason)}`,
-      `Operating mode: ${state.lastAutonomyMode}`,
-      `Policies: ${state.lastPolicySummary}`,
-      `Workflow mode: ${state.lastCommandMode}`,
-      `Confidence: ${state.lastConfidence}`,
-      `Continuity: ${continuityLabel(state.lastContinuation, state.lastContinuationReason)}`,
-      `Phase: ${state.phase}`,
-      `Iteration: ${state.iteration}/${state.maxIterations}`,
-      `Failures: ${state.failures}/${state.maxFailures}`,
-      `Last command: ${state.lastCommand ?? "-"}`,
-      `Last outcome: ${state.lastOutcome ?? "-"}`,
-      `Result source: ${state.lastResultSource ?? "-"}`,
-      `Queue state: ${state.queueState}`,
-      `Stop code: ${state.stopCode}`,
-      `Queue drain passes: ${state.emptyQueuePasses}`,
-      `Session hop: ${state.freshSessionBetweenSteps ? "on" : "off"}`,
-    ];
-
-    if (alert) widgetLines.push(`Alert: ${alert}`);
-    if (state.lastEvidenceSignals.length > 0) {
-      widgetLines.push(`Evidence: ${state.lastEvidenceSignals.join(", ")}`);
-    }
-    if (state.stopReason) widgetLines.push(`Reason: ${state.stopReason}`);
-    ctx.ui.setWidget("otto", widgetLines);
+    ctx.ui.setWidget("otto", buildWidgetLines(state, currentIssue, alert));
   };
 
   const setContinuation = (
