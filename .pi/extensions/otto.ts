@@ -10,10 +10,14 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 
 import {
+  applyFailureState,
+  applyQueuedWorkflow,
   applyOttoSessionStatus,
+  applyStopState,
+  buildFailureBudgetReason,
+  buildStopNotification,
   buildOttoStatusDetail,
   buildOttoStatusSnapshot,
-  clearOttoAwaitingState,
   compactedContinueReason,
   compactionFallbackReason,
   createOttoCoreState,
@@ -24,13 +28,13 @@ import {
   initializeOttoRunState,
   OTTO_COMPACTION_INSTRUCTIONS,
   pauseOttoRunState,
-  queueOttoCommandState,
-  registerOttoFailure,
+  parseOttoRemainingWork,
+  prepareCompaction,
+  prepareFreshSessionHop,
   resolveOttoSessionPolicy,
   resolveOttoStartReason,
   resumeNextStepReason,
   resumeOttoRunState,
-  stopOttoState,
   type OttoActionKind,
   type OttoCheckpoint,
   type OttoConfidenceKind,
@@ -1287,7 +1291,7 @@ export default function otto(pi: ExtensionAPI) {
     void commandExecutor.queueWorkflowCommand(command, prompt, {
       followUp: !ctx.isIdle(),
     });
-    state = queueOttoCommandState(state, {
+    state = applyQueuedWorkflow(state, {
       command,
       prompt,
       token,
@@ -1308,9 +1312,7 @@ export default function otto(pi: ExtensionAPI) {
       "fresh-session",
       "Fresh-session mode is enabled; rotate the session before the next workflow step.",
     );
-    state = clearOttoAwaitingState(state);
-    state.lastCommandMode = "accept-default";
-    state.lastDecisionReason = state.lastContinuationReason;
+    state = prepareFreshSessionHop(state, state.lastContinuationReason ?? "");
     persistState("direct-session-hop-attempt");
     updateUi(ctx);
 
@@ -1348,7 +1350,7 @@ export default function otto(pi: ExtensionAPI) {
   };
 
   const compactAndQueueNextStep = (ctx: ExtensionContext): void => {
-    state = clearOttoAwaitingState(state);
+    state = prepareCompaction(state);
     persistState("compact-before-next-step");
     updateUi(ctx);
 
@@ -1389,11 +1391,11 @@ export default function otto(pi: ExtensionAPI) {
       commandExecutor.executeShell("td", ["in-review"], 20000),
     ]);
 
-    const immediateOutput = `${reviewable.stdout}\n${ready.stdout}`;
-    const hasImmediateWork = /\btd-[a-z0-9]+\b/i.test(immediateOutput);
-    const hasInReview = /\btd-[a-z0-9]+\b/i.test(inReview.stdout);
-
-    return { hasImmediateWork, hasInReview };
+    return parseOttoRemainingWork(
+      reviewable.stdout,
+      ready.stdout,
+      inReview.stdout,
+    );
   };
 
   const stopRun = (
@@ -1402,14 +1404,12 @@ export default function otto(pi: ExtensionAPI) {
     reason: string,
     stopCode: StopCode,
   ): void => {
-    state = stopOttoState(state, phase, reason, stopCode);
+    state = applyStopState(state, phase, reason, stopCode);
     persistState(`stop:${phase}`);
     updateUi(ctx);
     if (ctx.hasUI) {
-      ctx.ui.notify(
-        `Otto ${phase}: ${reason}`,
-        phase === "error" ? "error" : "info",
-      );
+      const notification = buildStopNotification(phase, reason);
+      ctx.ui.notify(notification.message, notification.level);
     }
   };
 
@@ -1418,13 +1418,13 @@ export default function otto(pi: ExtensionAPI) {
     message: string,
     phase: Phase = "error",
   ): boolean => {
-    state = registerOttoFailure(state, message);
+    state = applyFailureState(state, message);
 
     if (state.failures >= state.maxFailures) {
       stopRun(
         ctx,
         phase,
-        `${message} Failure budget reached (${state.failures}/${state.maxFailures}).`,
+        buildFailureBudgetReason(message, state.failures, state.maxFailures),
         "failure-budget-reached",
       );
       return true;
