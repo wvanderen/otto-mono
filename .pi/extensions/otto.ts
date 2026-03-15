@@ -11,6 +11,8 @@ import type {
 
 import {
   applyOttoSessionStatus,
+  buildOttoStatusDetail,
+  buildOttoStatusSnapshot,
   clearOttoAwaitingState,
   compactedContinueReason,
   compactionFallbackReason,
@@ -45,7 +47,7 @@ import {
 import {
   PiCommandExecutor,
   PiOperatorUi,
-  createOttoPiServices,
+  createCachedOttoPiServices,
 } from "./pi-adapter";
 
 import {
@@ -1178,19 +1180,7 @@ export default function otto(pi: ExtensionAPI) {
   let state = newRunState();
   let turnHadToolError = false;
   let onboardingHintShown = false;
-  const serviceCache = new WeakMap<
-    object,
-    ReturnType<typeof createOttoPiServices>
-  >();
-
-  const getServices = (ctx: ExtensionContext | ExtensionCommandContext) => {
-    const key = ctx as object;
-    const cached = serviceCache.get(key);
-    if (cached) return cached;
-    const created = createOttoPiServices(pi, ctx as ExtensionCommandContext);
-    serviceCache.set(key, created);
-    return created;
-  };
+  const getServices = createCachedOttoPiServices(pi);
 
   const persistState = (reason: string): void => {
     pi.appendEntry(STATE_ENTRY_TYPE, {
@@ -2035,57 +2025,24 @@ export default function otto(pi: ExtensionAPI) {
   ): Promise<void> => {
     const services = getServices(ctx);
     const loadedPreferences = loadAutopilotPreferences();
-    const status = [
-      `Run: ${state.runId ?? "none"}`,
-      `Preferences: ${loadedPreferences.source ?? "built-in defaults"}`,
-      `Current td: ${currentIssueLabel(state.lastIssueId, state.lastIssueTitle)}`,
-      `Action: ${state.lastAction ?? "-"}`,
-      `Why: ${widgetReasonLabel(state.lastDecisionReason)}`,
-      `Operating mode: ${state.lastAutonomyMode}`,
-      `Policies: ${state.lastPolicySummary}`,
-      `Workflow mode: ${state.lastCommandMode}`,
-      `Phase: ${state.phase}`,
-      `Active: ${state.active ? "yes" : "no"}`,
-      `Iteration: ${state.iteration}/${state.maxIterations}`,
-      `Failures: ${state.failures}/${state.maxFailures}`,
-      `Last command: ${state.lastCommand ?? "-"}`,
-      `Last outcome: ${state.lastOutcome ?? "-"}`,
-      `Confidence: ${state.lastConfidence}`,
-      `Evidence: ${
-        state.lastEvidenceSignals.length > 0
-          ? state.lastEvidenceSignals.join(", ")
-          : "-"
-      }`,
-      `Continuity: ${continuityLabel(state.lastContinuation, state.lastContinuationReason)}`,
-      `Session policy: ${state.sessionPolicy}`,
-      `Session support: ${state.sessionSupport}`,
-      `Last rotation: ${state.lastSessionRotation}`,
-      `Result source: ${state.lastResultSource ?? "-"}`,
-      `Queue state: ${state.queueState}`,
-      `Stop code: ${state.stopCode}`,
-      `Stop reason: ${state.stopReason ?? "-"}`,
-    ].join("\n");
-
-    const detailLines = [status];
-    const alert = stateAlert(state);
-    if (alert) detailLines.push(`Alert: ${alert}`);
-    if (loadedPreferences.error) {
-      detailLines.push(`Preference warning: ${loadedPreferences.error}`);
-    }
-
-    services.ui.notify(detailLines.join("\n"), "info");
-    services.ui.renderStatus({
-      runId: state.runId,
-      phase: state.phase,
-      stopCode: state.stopCode,
-      stopReason: state.stopReason,
-      sessionPolicy: state.sessionPolicy,
-      sessionSupport: state.sessionSupport,
-      lastSessionRotation: state.lastSessionRotation,
-      queueState: state.queueState,
-      iteration: state.iteration,
-      failures: state.failures,
-    });
+    services.ui.notify(
+      buildOttoStatusDetail(state, {
+        preferencesSource: loadedPreferences.source,
+        preferenceError: loadedPreferences.error,
+        currentIssueLabel: currentIssueLabel(
+          state.lastIssueId,
+          state.lastIssueTitle,
+        ),
+        reasonLabel: widgetReasonLabel(state.lastDecisionReason),
+        continuityLabel: continuityLabel(
+          state.lastContinuation,
+          state.lastContinuationReason,
+        ),
+        alert: stateAlert(state),
+      }),
+      "info",
+    );
+    services.ui.renderStatus(buildOttoStatusSnapshot(state));
     updateUi(ctx);
   };
 
