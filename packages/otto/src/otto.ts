@@ -11,12 +11,21 @@ import type {
 
 import {
   clearOttoAwaitingState,
+  compactedContinueReason,
+  compactionFallbackReason,
   createOttoCoreState,
   createWorkflowToken,
+  freshSessionContinueReason,
+  freshSessionFailedWarning,
+  freshSessionUnsupportedWarning,
   initializeOttoRunState,
+  OTTO_COMPACTION_INSTRUCTIONS,
   pauseOttoRunState,
   queueOttoCommandState,
   registerOttoFailure,
+  resolveOttoSessionPolicy,
+  resolveOttoStartReason,
+  resumeNextStepReason,
   resumeOttoRunState,
   stopOttoState,
   type OttoActionKind,
@@ -32,7 +41,11 @@ import {
   type OttoStopCode,
   type OttoWorkflowMode,
 } from "./core";
-import { PiCommandExecutor, createOttoPiServices } from "./pi-adapter";
+import {
+  PiCommandExecutor,
+  PiOperatorUi,
+  createOttoPiServices,
+} from "./pi-adapter";
 
 import {
   classifyAction,
@@ -696,7 +709,7 @@ const onboardingChoice = async <T>(
   title: string,
   choices: PreferenceChoice<T>[],
 ): Promise<T | null> => {
-  return createOttoPiServices(pi, ctx).ui.choose(title, choices);
+  return new PiOperatorUi(ctx).choose(title, choices);
 };
 
 const onboardingWorkflowOverride = async (
@@ -1165,6 +1178,9 @@ export default function otto(pi: ExtensionAPI) {
   let turnHadToolError = false;
   let onboardingHintShown = false;
 
+  const getServices = (ctx: ExtensionContext | ExtensionCommandContext) =>
+    createOttoPiServices(pi, ctx as ExtensionCommandContext);
+
   const persistState = (reason: string): void => {
     pi.appendEntry(STATE_ENTRY_TYPE, {
       ...state,
@@ -1286,7 +1302,7 @@ export default function otto(pi: ExtensionAPI) {
   const continueWithFreshSession = async (
     ctx: ExtensionContext,
   ): Promise<void> => {
-    const services = createOttoPiServices(pi, ctx as ExtensionCommandContext);
+    const services = getServices(ctx);
     setContinuation(
       "fresh-session",
       "Fresh-session mode is enabled; rotate the session before the next workflow step.",
@@ -1300,10 +1316,7 @@ export default function otto(pi: ExtensionAPI) {
     const rotation = await services.sessionControl.rotate(ctx);
 
     if (rotation.status === "unsupported") {
-      services.ui.notify(
-        "Pi new-session API is unavailable; falling back to same-session compacted iteration.",
-        "warning",
-      );
+      services.ui.notify(freshSessionUnsupportedWarning(), "warning");
       compactAndQueueNextStep(ctx);
       return;
     }
@@ -1324,15 +1337,12 @@ export default function otto(pi: ExtensionAPI) {
       queueWorkflowCommand(
         ctx,
         NEXT_STEP_COMMAND,
-        "Fresh session created successfully via Pi's native new-session flow; continue with the next-step workflow.",
+        freshSessionContinueReason(),
       );
       return;
     }
 
-    services.ui.notify(
-      "Fresh-session rotation failed; falling back to same-session compacted iteration.",
-      "warning",
-    );
+    services.ui.notify(freshSessionFailedWarning(), "warning");
     compactAndQueueNextStep(ctx);
   };
 
@@ -1341,34 +1351,20 @@ export default function otto(pi: ExtensionAPI) {
     persistState("compact-before-next-step");
     updateUi(ctx);
 
-    createOttoPiServices(
-      pi,
-      ctx as ExtensionCommandContext,
-    ).sessionControl.compact(ctx, {
-      customInstructions:
-        "Preserve only concise Otto continuity: current run phase, latest td issue/action, validation status, unresolved blockers, and immediate next-step context.",
+    getServices(ctx).sessionControl.compact(ctx, {
+      customInstructions: OTTO_COMPACTION_INSTRUCTIONS,
       onComplete: () => {
         if (!state.active || state.phase !== "running") return;
-        setContinuation(
-          "same-session-compacted",
-          "Compaction completed; continue the loop in the current session.",
-        );
-        queueWorkflowCommand(
-          ctx,
-          NEXT_STEP_COMMAND,
-          "Compaction completed; continue the loop in the current session.",
-        );
+        setContinuation("same-session-compacted", compactedContinueReason());
+        queueWorkflowCommand(ctx, NEXT_STEP_COMMAND, compactedContinueReason());
       },
       onError: () => {
         if (!state.active || state.phase !== "running") return;
-        setContinuation(
-          "compaction-fallback",
-          "Compaction fallback triggered; continue the loop without a fresh session.",
-        );
+        setContinuation("compaction-fallback", compactionFallbackReason());
         queueWorkflowCommand(
           ctx,
           NEXT_STEP_COMMAND,
-          "Compaction fallback triggered; continue the loop without a fresh session.",
+          compactionFallbackReason(),
         );
       },
     });
@@ -1452,12 +1448,12 @@ export default function otto(pi: ExtensionAPI) {
           followUp: !ctx.isIdle(),
         });
         if (error && ctx.hasUI) {
-          createOttoPiServices(pi, ctx).ui.notify(
+          getServices(ctx).ui.notify(
             `Otto preferences fallback: ${source} could not be loaded (${error})`,
             "warning",
           );
         }
-        createOttoPiServices(pi, ctx).ui.notify(`Queued ${command}`, "info");
+        getServices(ctx).ui.notify(`Queued ${command}`, "info");
       },
     });
   };
@@ -1924,7 +1920,7 @@ export default function otto(pi: ExtensionAPI) {
     args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
-    const services = createOttoPiServices(pi, ctx);
+    const services = getServices(ctx);
 
     if (state.active && state.phase !== "paused") {
       services.ui.notify("Otto is already running.", "warning");
@@ -1955,9 +1951,7 @@ export default function otto(pi: ExtensionAPI) {
       now,
     });
 
-    const sessionPolicy = freshSessionBetweenSteps
-      ? "require-fresh"
-      : "allow-compatibility";
+    const sessionPolicy = resolveOttoSessionPolicy(freshSessionBetweenSteps);
 
     try {
       const snapshot = await services.core.start({
@@ -1985,13 +1979,7 @@ export default function otto(pi: ExtensionAPI) {
 
     persistState("start");
     updateUi(ctx);
-    queueWorkflowCommand(
-      ctx,
-      initialCommand,
-      skipInit
-        ? "Skip initialize and begin directly with next-step based on existing workspace state."
-        : "Start by initializing BMAD and td context before entering the next-step loop.",
-    );
+    queueWorkflowCommand(ctx, initialCommand, resolveOttoStartReason(skipInit));
     if (source && ctx.hasUI) {
       services.ui.notify(
         error
@@ -2030,7 +2018,7 @@ export default function otto(pi: ExtensionAPI) {
     _args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
-    const services = createOttoPiServices(pi, ctx);
+    const services = getServices(ctx);
     const loadedPreferences = loadAutopilotPreferences();
     const status = [
       `Run: ${state.runId ?? "none"}`,
@@ -2097,7 +2085,7 @@ export default function otto(pi: ExtensionAPI) {
     _args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
-    const services = createOttoPiServices(pi, ctx);
+    const services = getServices(ctx);
     if (!state.active) {
       services.ui.notify("Otto is not running.", "warning");
       return;
@@ -2119,7 +2107,7 @@ export default function otto(pi: ExtensionAPI) {
     _args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
-    const services = createOttoPiServices(pi, ctx);
+    const services = getServices(ctx);
     if (!state.active || state.phase !== "paused") {
       services.ui.notify("Otto is not paused.", "warning");
       return;
@@ -2149,11 +2137,7 @@ export default function otto(pi: ExtensionAPI) {
     persistState("resume");
     updateUi(ctx);
 
-    queueWorkflowCommand(
-      ctx,
-      NEXT_STEP_COMMAND,
-      "Resume the loop from a paused state and continue with the next-step workflow.",
-    );
+    queueWorkflowCommand(ctx, NEXT_STEP_COMMAND, resumeNextStepReason());
     services.ui.notify("Otto resumed.", "success");
   };
 
@@ -2168,7 +2152,7 @@ export default function otto(pi: ExtensionAPI) {
     args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
-    const services = createOttoPiServices(pi, ctx);
+    const services = getServices(ctx);
     if (!state.active) {
       services.ui.notify("Otto is not running.", "warning");
       return;
@@ -2188,7 +2172,7 @@ export default function otto(pi: ExtensionAPI) {
     _args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
-    const services = createOttoPiServices(pi, ctx);
+    const services = getServices(ctx);
     if (!services.ui.isInteractive()) {
       services.ui.notify("/otto-dive requires interactive mode.", "error");
       return;
