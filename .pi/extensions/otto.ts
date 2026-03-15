@@ -1260,14 +1260,9 @@ export default function otto(pi: ExtensionAPI) {
       token,
     );
     const mode = workflowModeFor(command as WorkflowCommand, preferences);
-    const options = ctx.isIdle()
-      ? undefined
-      : { deliverAs: "followUp" as const };
-    if (options) {
-      pi.sendUserMessage(prompt, options);
-    } else {
-      void commandExecutor.queueWorkflowCommand(command, prompt);
-    }
+    void commandExecutor.queueWorkflowCommand(command, prompt, {
+      followUp: !ctx.isIdle(),
+    });
     state.awaitingCommand = command;
     state.awaitingPrompt = prompt;
     state.awaitingToken = token;
@@ -1285,6 +1280,7 @@ export default function otto(pi: ExtensionAPI) {
   const continueWithFreshSession = async (
     ctx: ExtensionContext,
   ): Promise<void> => {
+    const services = createOttoPiServices(pi, ctx as ExtensionCommandContext);
     setContinuation(
       "fresh-session",
       "Fresh-session mode is enabled; rotate the session before the next workflow step.",
@@ -1298,35 +1294,28 @@ export default function otto(pi: ExtensionAPI) {
     persistState("direct-session-hop-attempt");
     updateUi(ctx);
 
-    const maybeNewSession = (
-      ctx as ExtensionContext & {
-        newSession?: () => Promise<{ cancelled?: boolean }>;
-      }
-    ).newSession;
+    const rotation = await services.sessionControl.rotate(ctx);
 
-    if (typeof maybeNewSession !== "function") {
-      if (ctx.hasUI) {
-        ctx.ui.notify(
-          "Pi new-session API is unavailable; falling back to same-session compacted iteration.",
-          "warning",
-        );
-      }
+    if (rotation.status === "unsupported") {
+      services.ui.notify(
+        "Pi new-session API is unavailable; falling back to same-session compacted iteration.",
+        "warning",
+      );
       compactAndQueueNextStep(ctx);
       return;
     }
 
-    try {
-      const result = await maybeNewSession.call(ctx);
-      if (result.cancelled) {
-        stopRun(
-          ctx,
-          "error",
-          "Session rotation cancelled.",
-          "session-rotation-cancelled",
-        );
-        return;
-      }
+    if (rotation.status === "cancelled") {
+      stopRun(
+        ctx,
+        "error",
+        "Session rotation cancelled.",
+        "session-rotation-cancelled",
+      );
+      return;
+    }
 
+    if (rotation.status === "success") {
       persistState("session-rotated-direct");
       updateUi(ctx);
       queueWorkflowCommand(
@@ -1334,15 +1323,14 @@ export default function otto(pi: ExtensionAPI) {
         NEXT_STEP_COMMAND,
         "Fresh session created successfully via Pi's native new-session flow; continue with the next-step workflow.",
       );
-    } catch {
-      if (ctx.hasUI) {
-        ctx.ui.notify(
-          "Fresh-session rotation failed; falling back to same-session compacted iteration.",
-          "warning",
-        );
-      }
-      compactAndQueueNextStep(ctx);
+      return;
     }
+
+    services.ui.notify(
+      "Fresh-session rotation failed; falling back to same-session compacted iteration.",
+      "warning",
+    );
+    compactAndQueueNextStep(ctx);
   };
 
   const compactAndQueueNextStep = (ctx: ExtensionContext): void => {
@@ -1353,7 +1341,10 @@ export default function otto(pi: ExtensionAPI) {
     persistState("compact-before-next-step");
     updateUi(ctx);
 
-    ctx.compact({
+    createOttoPiServices(
+      pi,
+      ctx as ExtensionCommandContext,
+    ).sessionControl.compact(ctx, {
       customInstructions:
         "Preserve only concise Otto continuity: current run phase, latest td issue/action, validation status, unresolved blockers, and immediate next-step context.",
       onComplete: () => {
@@ -1467,10 +1458,9 @@ export default function otto(pi: ExtensionAPI) {
       handler: async (_args, ctx) => {
         const { preferences, source, error } = loadAutopilotPreferences();
         const prompt = workflowPrompt(command, preferences, newWorkflowToken());
-        const options = ctx.isIdle()
-          ? undefined
-          : { deliverAs: "followUp" as const };
-        pi.sendUserMessage(prompt, options);
+        await commandExecutor.queueWorkflowCommand(command, prompt, {
+          followUp: !ctx.isIdle(),
+        });
         if (error && ctx.hasUI) {
           createOttoPiServices(pi, ctx).ui.notify(
             `Otto preferences fallback: ${source} could not be loaded (${error})`,

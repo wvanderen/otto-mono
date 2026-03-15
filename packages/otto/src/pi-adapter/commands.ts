@@ -2,11 +2,22 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 import type { ExecResult, OttoCommandExecutor } from "../core";
 
+export interface PiQueueOptions {
+  followUp?: boolean;
+}
+
 export class PiCommandExecutor implements OttoCommandExecutor {
   constructor(private readonly pi: ExtensionAPI) {}
 
-  async queueWorkflowCommand(command: string, prompt: string): Promise<void> {
-    this.pi.sendUserMessage(`${command}\n\n${prompt}`);
+  async queueWorkflowCommand(
+    command: string,
+    prompt: string,
+    options: PiQueueOptions = {},
+  ): Promise<void> {
+    this.pi.sendUserMessage(
+      `${command}\n\n${prompt}`,
+      options.followUp ? { deliverAs: "followUp" } : undefined,
+    );
   }
 
   async executeShell(
