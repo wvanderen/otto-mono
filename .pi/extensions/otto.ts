@@ -10,7 +10,9 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 
 import {
+  appendOttoCheckpoint,
   applyFailureState,
+  applyAgentResultUpdate,
   applyQueuedWorkflow,
   applyOttoSessionStatus,
   applyStopState,
@@ -28,6 +30,7 @@ import {
   freshSessionUnsupportedWarning,
   initializeOttoRunState,
   markAwaitingWorkflowStarted,
+  markOttoTdDrift,
   OTTO_COMPACTION_INSTRUCTIONS,
   pauseOttoRunState,
   parseOttoRemainingWork,
@@ -1534,26 +1537,22 @@ export default function otto(pi: ExtensionAPI) {
     const issueTitle =
       workflowResult?.issueTitle ?? parseIssueTitle(assistantText, issueId);
 
-    const previousIssueId = state.lastIssueId;
-    state.lastIssueId = issueId ?? state.lastIssueId;
-    state.lastIssueTitle =
-      issueTitle ?? (issueId === previousIssueId ? state.lastIssueTitle : null);
-    state.lastAction = workflowResult?.action ?? classifyAction(assistantText);
-    state.lastOutcome =
-      workflowResult?.outcome ?? classifyOutcome(assistantText);
-    state.lastConfidence = evidence.effectiveConfidence;
-    state.lastResultSource = resolvedWorkflowResult.resultSource;
-    state.lastEvidenceAlert = evidence.alert;
-    state.lastEvidenceSignals = evidence.signals;
-    state.lastProgressAt = Date.now();
-    state.lastError = resolvedWorkflowResult.error;
+    state = applyAgentResultUpdate(state, {
+      issueId,
+      issueTitle,
+      action: workflowResult?.action ?? classifyAction(assistantText),
+      outcome: workflowResult?.outcome ?? classifyOutcome(assistantText),
+      confidence: evidence.effectiveConfidence,
+      resultSource: resolvedWorkflowResult.resultSource,
+      evidenceAlert: evidence.alert,
+      evidenceSignals: evidence.signals,
+      error: resolvedWorkflowResult.error,
+    });
 
     const alert = stateAlert(state);
-    const checkpointIndex = state.checkpoints.length;
 
     if (entryId) {
-      state.checkpoints.push({
-        iteration: state.iteration,
+      state = appendOttoCheckpoint(state, {
         entryId,
         command: completedCommand,
         issueId,
@@ -1561,20 +1560,11 @@ export default function otto(pi: ExtensionAPI) {
         action: workflowResult?.action ?? classifyAction(assistantText),
         outcome: workflowResult?.outcome ?? classifyOutcome(assistantText),
         confidence: evidence.effectiveConfidence,
-        queueState: state.queueState,
-        continuity: state.lastContinuation,
-        continuityReason: state.lastContinuationReason,
         alert,
         evidenceSignals: evidence.signals,
         reason: state.lastDecisionReason,
         summary,
-        timestamp: Date.now(),
       });
-      if (state.checkpoints.length > 100) {
-        state.checkpoints = state.checkpoints.slice(
-          state.checkpoints.length - 100,
-        );
-      }
       pi.setLabel(
         entryId,
         `auto:${state.runId ?? "run"}:iter-${state.iteration}`,
@@ -1671,18 +1661,11 @@ export default function otto(pi: ExtensionAPI) {
           state.lastEvidenceSignals,
           ["td-drift", "result-drift"],
         );
-        state.lastEvidenceSignals = evidenceSignals;
-        state.lastEvidenceAlert = "td drift";
-        state.lastConfidence = "low";
-        state.lastDecisionReason = shortText(tdDriftReason, 160);
-
-        const checkpoint = state.checkpoints[checkpointIndex];
-        if (checkpoint) {
-          checkpoint.evidenceSignals = evidenceSignals;
-          checkpoint.alert = "td drift";
-          checkpoint.confidence = "low";
-          checkpoint.reason = state.lastDecisionReason;
-        }
+        state = markOttoTdDrift(
+          state,
+          shortText(tdDriftReason, 160),
+          evidenceSignals,
+        );
 
         if (ctx.hasUI) {
           ctx.ui.notify(tdDriftReason, "warning");
