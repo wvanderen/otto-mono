@@ -60,6 +60,11 @@ Otto full mode also expects a Pi build that exposes native
 missing, Otto falls back to same-session compaction and cannot preserve
 its strongest review-separation guarantees.
 
+Otto is also being refactored toward a hybrid-core architecture where the
+run engine owns session lifecycle through the Pi SDK and Pi remains the
+main operator surface. The current extension-first implementation is
+transitional; see `docs/otto-hybrid-core-blueprint.md`.
+
 ## Installation
 
 Install from npm into Pi:
@@ -120,6 +125,12 @@ operator for BMAD + `td` delivery.
 The published package is intentionally shaped to match Pi's package
 model so public users can install it directly with `pi install`.
 
+Architecture direction:
+
+- near term: Pi package with extracted core/runtime boundaries
+- target: SDK-driven Otto engine with a thin Pi adapter
+- planning reference: `docs/otto-hybrid-core-blueprint.md`
+
 ## Configuration
 
 Run `/otto-onboard` to save project-wide Otto preferences into `.pi/otto.json`.
@@ -171,6 +182,10 @@ Before `npm pack` or `npm publish`, the package sync step copies that source int
 That keeps local Pi iteration centered on the example extension while
 still shipping the real source in the published Otto package.
 
+This packaging model is temporary. The approved direction is to move Otto
+toward a package-first hybrid core so runtime logic is no longer split
+between example and package copies.
+
 ## Roadmap
 
 Otto is still early. The roadmap is intentionally high level and tracks
@@ -206,6 +221,9 @@ Working docs:
 - `docs/otto-pi-session-capability-matrix.md`
 - `docs/otto-session-reset-support-plan.md`
 - `docs/otto-runtime-session-detection-design.md`
+- `docs/otto-session-reset-docs-plan.md`
+- `docs/otto-session-reset-install-onboarding-checks.md`
+- `docs/otto-hybrid-core-blueprint.md`
 
 If you want the fuller product direction behind this roadmap, start
 with `docs/otto-manifesto.md`.

@@ -1,5 +1,9 @@
 # Otto Extension (Local Prototype)
 
+This local prototype remains useful for development, but Otto's approved
+direction is now a package-first hybrid core with a thin Pi adapter. See
+`docs/otto-hybrid-core-blueprint.md` for the extraction plan.
+
 Otto adds a lightweight automation loop to Pi for BMAD + td workflows:
 
 1. Runs `/bmad:td:initialize` once (optional)
@@ -11,6 +15,9 @@ Otto adds a lightweight automation loop to Pi for BMAD + td workflows:
 
 - `examples/pi-extension/otto.ts`
 - `examples/pi-extension/otto-result.mjs`
+
+This example should gradually shrink into a thin adapter example as the
+package-owned core lands.
 
 ## Install Locally in Pi
 
@@ -49,7 +56,9 @@ Then run `/reload` in Pi.
 - `/otto-resume`
 - `/otto-stop [reason]`
 - `/otto-dive`
-- legacy aliases: `/bmad-auto-onboard`, `/bmad-auto-start`, `/bmad-auto-status`, `/bmad-auto-pause`, `/bmad-auto-resume`, `/bmad-auto-stop`, `/bmad-auto-dive`
+- legacy aliases: `/bmad-auto-onboard`, `/bmad-auto-start`,
+  `/bmad-auto-status`, `/bmad-auto-pause`, `/bmad-auto-resume`,
+  `/bmad-auto-stop`, `/bmad-auto-dive`
 
 ## Preferences And Onboarding
 
@@ -64,7 +73,8 @@ Otto loads preferences in this precedence order:
 5. `OTTO_CONFIG`
 6. `BMAD_AUTOPILOT_CONFIG`
 
-That keeps older config paths working while making `.pi/otto.json` the preferred project-local home for Otto settings.
+That keeps older config paths working while making `.pi/otto.json` the
+preferred project-local home for Otto settings.
 
 Example:
 
@@ -94,13 +104,20 @@ Example:
 }
 ```
 
-- `autonomy.mode` gives Otto a coherent posture: `delivery`, `explore`, or `custom`.
-- `autonomy.policies` makes approval, drift handling, evidence thresholds, and steering explicit without abandoning Otto's core loop.
+- `autonomy.mode` gives Otto a coherent posture: `delivery`, `explore`,
+  or `custom`.
+- `autonomy.policies` makes approval, drift handling, evidence
+  thresholds, and steering explicit without abandoning Otto's core loop.
 - `defaults` sets the fallback behavior for `/otto-start`.
-- `workflows.commandModes` lets you opt specific workflows into `party` mode while keeping the rest accept-default.
-- Delivery mode defaults to strict approval, drift-triggered PRD validation, strict evidence, and steady steering.
-- Explore mode defaults to draft approval, continue-on-drift, relaxed evidence, interactive steering, same-session continuity, and `party` workflow mode.
-- Custom mode keeps Otto coherent by starting from delivery posture and then applying your policy overrides.
+- `workflows.commandModes` lets you opt specific workflows into `party`
+  mode while keeping the rest accept-default.
+- Delivery mode defaults to strict approval, drift-triggered PRD
+  validation, strict evidence, and steady steering.
+- Explore mode defaults to draft approval, continue-on-drift, relaxed
+  evidence, interactive steering, same-session continuity, and `party`
+  workflow mode.
+- Custom mode keeps Otto coherent by starting from delivery posture and
+  then applying your policy overrides.
 
 ## Otto Skill Resource
 
@@ -113,12 +130,26 @@ The packaged Otto extension ships an `otto` skill resource for Pi agents.
 
 - Checkpoints are labeled in the session tree as `auto:<runId>:iter-<N>`.
 - `/otto-dive` can either navigate to a checkpoint or fork from it.
-- Otto sweeps drained queues for epic maintenance, then runs `/bmad:td:validate-prd` before stopping when no follow-up td work remains.
-- If a workflow claims completion with placeholder, drift, or weak-runtime-evidence language, Otto jumps straight to `/bmad:td:validate-prd` instead of treating that as a clean stop.
-- If a workflow reports `no-work` but `td` still shows ready, reviewable, or in-review issues, Otto marks that turn as `td drift`, lowers confidence, and keeps the loop moving.
-- Drift handling now follows the active autonomy policy: validate immediately, continue with a warning, or pause for operator input.
-- By default, Otto hops to a fresh session between `next-step` iterations using Pi's native new-session flow (the same behavior as `/new`). Use `--same-session` to disable.
-- If Pi cannot rotate into a fresh session, Otto falls back to same-session compacted continuation for that cycle.
-- When only `in-review` issues remain, Otto continues with a session hop (default mode) to allow cross-session review separation.
-- Otto full mode requires a Pi build that exposes `ctx.newSession()` to extension command handlers; Pi does not currently expose an extension-safe in-place clear-context API.
-- See `docs/otto-pi-session-capability-matrix.md` for the audited runtime/build matrix and minimum capability guidance.
+- Otto sweeps drained queues for epic maintenance, then runs
+  `/bmad:td:validate-prd` before stopping when no follow-up td work
+  remains.
+- If a workflow claims completion with placeholder, drift, or
+  weak-runtime-evidence language, Otto jumps straight to
+  `/bmad:td:validate-prd` instead of treating that as a clean stop.
+- If a workflow reports `no-work` but `td` still shows ready, reviewable,
+  or in-review issues, Otto marks that turn as `td drift`, lowers
+  confidence, and keeps the loop moving.
+- Drift handling now follows the active autonomy policy: validate
+  immediately, continue with a warning, or pause for operator input.
+- By default, Otto hops to a fresh session between `next-step`
+  iterations using Pi's native new-session flow (the same behavior as
+  `/new`). Use `--same-session` to disable.
+- If Pi cannot rotate into a fresh session, Otto falls back to
+  same-session compacted continuation for that cycle.
+- When only `in-review` issues remain, Otto continues with a session hop
+  (default mode) to allow cross-session review separation.
+- Otto full mode requires a Pi build that exposes `ctx.newSession()` to
+  extension command handlers; Pi does not currently expose an
+  extension-safe in-place clear-context API.
+- See `docs/otto-pi-session-capability-matrix.md` for the audited
+  runtime/build matrix and minimum capability guidance.
