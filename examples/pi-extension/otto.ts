@@ -10,8 +10,15 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 
 import {
+  clearOttoAwaitingState,
   createOttoCoreState,
   createWorkflowToken,
+  initializeOttoRunState,
+  pauseOttoRunState,
+  queueOttoCommandState,
+  registerOttoFailure,
+  resumeOttoRunState,
+  stopOttoState,
   type OttoActionKind,
   type OttoCheckpoint,
   type OttoConfidenceKind,
@@ -1263,16 +1270,15 @@ export default function otto(pi: ExtensionAPI) {
     void commandExecutor.queueWorkflowCommand(command, prompt, {
       followUp: !ctx.isIdle(),
     });
-    state.awaitingCommand = command;
-    state.awaitingPrompt = prompt;
-    state.awaitingToken = token;
-    state.awaitingStarted = false;
-    state.lastCommand = command;
-    state.lastCommandMode = mode;
-    state.lastAutonomyMode = autonomy.mode;
-    state.lastPolicySummary = policySummary(autonomy);
-    state.lastDecisionReason = shortText(reason, 160);
-    state.lastProgressAt = Date.now();
+    state = queueOttoCommandState(state, {
+      command,
+      prompt,
+      token,
+      reason: shortText(reason, 160),
+      commandMode: mode,
+      autonomyMode: autonomy.mode,
+      policySummary: policySummary(autonomy),
+    });
     persistState(`queued:${command}`);
     updateUi(ctx);
   };
@@ -1285,10 +1291,7 @@ export default function otto(pi: ExtensionAPI) {
       "fresh-session",
       "Fresh-session mode is enabled; rotate the session before the next workflow step.",
     );
-    state.awaitingCommand = null;
-    state.awaitingPrompt = null;
-    state.awaitingToken = null;
-    state.awaitingStarted = false;
+    state = clearOttoAwaitingState(state);
     state.lastCommandMode = "accept-default";
     state.lastDecisionReason = state.lastContinuationReason;
     persistState("direct-session-hop-attempt");
@@ -1334,10 +1337,7 @@ export default function otto(pi: ExtensionAPI) {
   };
 
   const compactAndQueueNextStep = (ctx: ExtensionContext): void => {
-    state.awaitingCommand = null;
-    state.awaitingPrompt = null;
-    state.awaitingToken = null;
-    state.awaitingStarted = false;
+    state = clearOttoAwaitingState(state);
     persistState("compact-before-next-step");
     updateUi(ctx);
 
@@ -1405,15 +1405,7 @@ export default function otto(pi: ExtensionAPI) {
     reason: string,
     stopCode: StopCode,
   ): void => {
-    state.active = false;
-    state.phase = phase;
-    state.stopReason = reason;
-    state.stopCode = stopCode;
-    state.awaitingCommand = null;
-    state.awaitingPrompt = null;
-    state.awaitingToken = null;
-    state.awaitingStarted = false;
-    state.lastProgressAt = Date.now();
+    state = stopOttoState(state, phase, reason, stopCode);
     persistState(`stop:${phase}`);
     updateUi(ctx);
     if (ctx.hasUI) {
@@ -1429,9 +1421,7 @@ export default function otto(pi: ExtensionAPI) {
     message: string,
     phase: Phase = "error",
   ): boolean => {
-    state.failures += 1;
-    state.lastError = message;
-    state.lastProgressAt = Date.now();
+    state = registerOttoFailure(state, message);
 
     if (state.failures >= state.maxFailures) {
       stopRun(
@@ -1952,24 +1942,18 @@ export default function otto(pi: ExtensionAPI) {
     const skipInit = parsed.skipInit ?? defaults?.skipInit ?? false;
     const initialCommand = skipInit ? NEXT_STEP_COMMAND : INIT_COMMAND;
 
-    state = {
-      ...newRunState(),
+    state = initializeOttoRunState({
       runId: `run-${now}`,
-      active: true,
       phase: skipInit ? "running" : "initializing",
       maxIterations:
         parsed.maxIterations ?? defaults?.maxIterations ?? state.maxIterations,
       maxFailures:
         parsed.maxFailures ?? defaults?.maxFailures ?? state.maxFailures,
       freshSessionBetweenSteps,
-      lastProgressAt: now,
       awaitingCommand: initialCommand,
-      awaitingPrompt: null,
-      awaitingToken: null,
-      awaitingStarted: false,
-      stopCode: "none",
       queueState: skipInit ? "ready" : "unknown",
-    };
+      now,
+    });
 
     const sessionPolicy = freshSessionBetweenSteps
       ? "require-fresh"
@@ -2118,7 +2102,7 @@ export default function otto(pi: ExtensionAPI) {
       services.ui.notify("Otto is not running.", "warning");
       return;
     }
-    state.phase = "paused";
+    state = pauseOttoRunState(state);
     persistState("pause");
     updateUi(ctx);
     services.ui.notify("Otto paused.", "info");
@@ -2161,13 +2145,7 @@ export default function otto(pi: ExtensionAPI) {
       }
     }
 
-    state.phase = "running";
-    state.stopReason = null;
-    state.stopCode = "none";
-    state.awaitingCommand = NEXT_STEP_COMMAND;
-    state.awaitingPrompt = null;
-    state.awaitingToken = null;
-    state.awaitingStarted = false;
+    state = resumeOttoRunState(state, NEXT_STEP_COMMAND);
     persistState("resume");
     updateUi(ctx);
 

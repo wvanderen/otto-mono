@@ -139,3 +139,121 @@ export const toStatusSnapshot = (state: OttoCoreState): OttoStatusSnapshot => ({
 
 export const createWorkflowToken = (): string =>
   `otto-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+export interface OttoQueueCommandStateOptions {
+  command: string;
+  prompt: string | null;
+  token: string | null;
+  reason: string;
+  commandMode: OttoWorkflowMode;
+  autonomyMode: OttoOperatingMode;
+  policySummary: string;
+  now?: number;
+}
+
+export const queueOttoCommandState = (
+  state: OttoCoreState,
+  options: OttoQueueCommandStateOptions,
+): OttoCoreState => ({
+  ...state,
+  awaitingCommand: options.command,
+  awaitingPrompt: options.prompt,
+  awaitingToken: options.token,
+  awaitingStarted: false,
+  lastCommand: options.command,
+  lastCommandMode: options.commandMode,
+  lastAutonomyMode: options.autonomyMode,
+  lastPolicySummary: options.policySummary,
+  lastDecisionReason: options.reason,
+  lastProgressAt: options.now ?? Date.now(),
+});
+
+export const clearOttoAwaitingState = (
+  state: OttoCoreState,
+  now = Date.now(),
+): OttoCoreState => ({
+  ...state,
+  awaitingCommand: null,
+  awaitingPrompt: null,
+  awaitingToken: null,
+  awaitingStarted: false,
+  lastProgressAt: now,
+});
+
+export const stopOttoState = (
+  state: OttoCoreState,
+  phase: OttoPhase,
+  reason: string,
+  stopCode: OttoStopCode,
+  now = Date.now(),
+): OttoCoreState => ({
+  ...clearOttoAwaitingState(state, now),
+  active: false,
+  phase,
+  stopReason: reason,
+  stopCode,
+});
+
+export const registerOttoFailure = (
+  state: OttoCoreState,
+  message: string,
+  now = Date.now(),
+): OttoCoreState => ({
+  ...state,
+  failures: state.failures + 1,
+  lastError: message,
+  lastProgressAt: now,
+});
+
+export interface OttoRunInitializationOptions {
+  runId: string;
+  phase: OttoPhase;
+  maxIterations: number;
+  maxFailures: number;
+  freshSessionBetweenSteps: boolean;
+  awaitingCommand: string;
+  queueState: OttoQueueState;
+  now?: number;
+}
+
+export const initializeOttoRunState = (
+  options: OttoRunInitializationOptions,
+): OttoCoreState => ({
+  ...createOttoCoreState({
+    runId: options.runId,
+    phase: options.phase,
+    maxIterations: options.maxIterations,
+    maxFailures: options.maxFailures,
+    queueState: options.queueState,
+  }),
+  active: true,
+  freshSessionBetweenSteps: options.freshSessionBetweenSteps,
+  awaitingCommand: options.awaitingCommand,
+  lastProgressAt: options.now ?? Date.now(),
+  stopCode: "none",
+});
+
+export const resumeOttoRunState = (
+  state: OttoCoreState,
+  awaitingCommand: string,
+  now = Date.now(),
+): OttoCoreState => ({
+  ...state,
+  phase: "running",
+  stopReason: null,
+  stopCode: "none",
+  awaitingCommand,
+  awaitingPrompt: null,
+  awaitingToken: null,
+  awaitingStarted: false,
+  lastProgressAt: now,
+});
+
+export const pauseOttoRunState = (
+  state: OttoCoreState,
+  now = Date.now(),
+): OttoCoreState => ({
+  ...state,
+  phase: "paused",
+  lastProgressAt: now,
+});

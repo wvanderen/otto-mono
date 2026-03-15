@@ -1,14 +1,23 @@
 import {
+  clearOttoAwaitingState,
   createOttoCoreState,
+  initializeOttoRunState,
+  pauseOttoRunState,
+  registerOttoFailure,
+  resumeOttoRunState,
+  stopOttoState,
   toStatusSnapshot,
   type OttoCoreState,
 } from "./state";
 import type {
   OttoCommandExecutor,
   OttoOperatorUi,
+  OttoPhase,
+  OttoQueueState,
   OttoSessionPolicy,
   OttoSessionRuntime,
   OttoStatusSnapshot,
+  OttoStopCode,
 } from "./contracts";
 
 export interface OttoCoreDependencies {
@@ -22,6 +31,16 @@ export interface OttoStartOptions {
   sessionPolicy?: OttoSessionPolicy;
   maxIterations?: number;
   maxFailures?: number;
+}
+
+export interface OttoInitializeRunOptions {
+  runId: string;
+  phase: OttoPhase;
+  maxIterations: number;
+  maxFailures: number;
+  freshSessionBetweenSteps: boolean;
+  awaitingCommand: string;
+  queueState: OttoQueueState;
 }
 
 export class OttoCoreService {
@@ -60,5 +79,39 @@ export class OttoCoreService {
     this.state.phase = "running";
     this.deps.ui.renderStatus(this.getStatusSnapshot());
     return this.getStatusSnapshot();
+  }
+
+  initializeRun(options: OttoInitializeRunOptions): OttoCoreState {
+    this.state = initializeOttoRunState(options);
+    return this.state;
+  }
+
+  pause(): OttoCoreState {
+    this.state = pauseOttoRunState(this.state);
+    return this.state;
+  }
+
+  resume(awaitingCommand: string): OttoCoreState {
+    this.state = resumeOttoRunState(this.state, awaitingCommand);
+    return this.state;
+  }
+
+  stop(
+    phase: OttoPhase,
+    reason: string,
+    stopCode: OttoStopCode,
+  ): OttoCoreState {
+    this.state = stopOttoState(this.state, phase, reason, stopCode);
+    return this.state;
+  }
+
+  queueCleared(): OttoCoreState {
+    this.state = clearOttoAwaitingState(this.state);
+    return this.state;
+  }
+
+  registerFailure(message: string): OttoCoreState {
+    this.state = registerOttoFailure(this.state, message);
+    return this.state;
   }
 }
