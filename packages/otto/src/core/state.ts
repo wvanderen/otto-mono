@@ -257,3 +257,21 @@ export const pauseOttoRunState = (
   phase: "paused",
   lastProgressAt: now,
 });
+
+export interface OttoSessionStatusUpdate {
+  sessionPolicy?: OttoCoreState["sessionPolicy"];
+  sessionSupport: OttoCoreState["sessionSupport"];
+  lastSessionRotation: OttoCoreState["lastSessionRotation"];
+  lastError?: string | null;
+}
+
+export const applyOttoSessionStatus = (
+  state: OttoCoreState,
+  update: OttoSessionStatusUpdate,
+): OttoCoreState => ({
+  ...state,
+  sessionPolicy: update.sessionPolicy ?? state.sessionPolicy,
+  sessionSupport: update.sessionSupport,
+  lastSessionRotation: update.lastSessionRotation,
+  lastError: update.lastError ?? state.lastError,
+});

@@ -10,6 +10,7 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 
 import {
+  applyOttoSessionStatus,
   clearOttoAwaitingState,
   compactedContinueReason,
   compactionFallbackReason,
@@ -1177,9 +1178,19 @@ export default function otto(pi: ExtensionAPI) {
   let state = newRunState();
   let turnHadToolError = false;
   let onboardingHintShown = false;
+  const serviceCache = new WeakMap<
+    object,
+    ReturnType<typeof createOttoPiServices>
+  >();
 
-  const getServices = (ctx: ExtensionContext | ExtensionCommandContext) =>
-    createOttoPiServices(pi, ctx as ExtensionCommandContext);
+  const getServices = (ctx: ExtensionContext | ExtensionCommandContext) => {
+    const key = ctx as object;
+    const cached = serviceCache.get(key);
+    if (cached) return cached;
+    const created = createOttoPiServices(pi, ctx as ExtensionCommandContext);
+    serviceCache.set(key, created);
+    return created;
+  };
 
   const persistState = (reason: string): void => {
     pi.appendEntry(STATE_ENTRY_TYPE, {
@@ -1960,17 +1971,21 @@ export default function otto(pi: ExtensionAPI) {
         maxIterations: state.maxIterations,
         maxFailures: state.maxFailures,
       });
-      state.sessionPolicy = snapshot.sessionPolicy;
-      state.sessionSupport = snapshot.sessionSupport;
-      state.lastSessionRotation = snapshot.lastSessionRotation;
+      state = applyOttoSessionStatus(state, {
+        sessionPolicy: snapshot.sessionPolicy,
+        sessionSupport: snapshot.sessionSupport,
+        lastSessionRotation: snapshot.lastSessionRotation,
+      });
     } catch (sessionError) {
-      state.sessionPolicy = sessionPolicy;
-      state.sessionSupport = "failed";
-      state.lastSessionRotation = "failed";
-      state.lastError =
-        sessionError instanceof Error
-          ? sessionError.message
-          : String(sessionError);
+      state = applyOttoSessionStatus(state, {
+        sessionPolicy,
+        sessionSupport: "failed",
+        lastSessionRotation: "failed",
+        lastError:
+          sessionError instanceof Error
+            ? sessionError.message
+            : String(sessionError),
+      });
       services.ui.notify(
         `Otto session runtime setup failed: ${state.lastError}`,
         "warning",
@@ -2116,16 +2131,20 @@ export default function otto(pi: ExtensionAPI) {
     if (state.runId) {
       try {
         const session = await services.sessions.continueRunSession(state.runId);
-        state.sessionPolicy = session.policy;
-        state.sessionSupport = session.support;
-        state.lastSessionRotation = "success";
+        state = applyOttoSessionStatus(state, {
+          sessionPolicy: session.policy,
+          sessionSupport: session.support,
+          lastSessionRotation: "success",
+        });
       } catch (sessionError) {
-        state.sessionSupport = "failed";
-        state.lastSessionRotation = "failed";
-        state.lastError =
-          sessionError instanceof Error
-            ? sessionError.message
-            : String(sessionError);
+        state = applyOttoSessionStatus(state, {
+          sessionSupport: "failed",
+          lastSessionRotation: "failed",
+          lastError:
+            sessionError instanceof Error
+              ? sessionError.message
+              : String(sessionError),
+        });
         services.ui.notify(
           `Otto resume session lookup failed: ${state.lastError}`,
           "warning",
