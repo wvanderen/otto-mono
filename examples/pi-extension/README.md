@@ -16,8 +16,8 @@ Otto adds a lightweight automation loop to Pi for BMAD + td workflows:
 - `examples/pi-extension/otto.ts`
 - `examples/pi-extension/otto-result.mjs`
 
-This example should gradually shrink into a thin adapter example as the
-package-owned core lands.
+This example now mirrors the package-owned source and should gradually
+shrink into a thin adapter example as the package core lands.
 
 ## Install Locally in Pi
 

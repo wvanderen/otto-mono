@@ -10,6 +10,24 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 
 import {
+  createOttoCoreState,
+  createWorkflowToken,
+  type OttoActionKind,
+  type OttoCheckpoint,
+  type OttoConfidenceKind,
+  type OttoContinuityKind,
+  type OttoCoreState,
+  type OttoOperatingMode,
+  type OttoOutcomeKind,
+  type OttoPhase,
+  type OttoQueueState,
+  type OttoResultSourceKind,
+  type OttoStopCode,
+  type OttoWorkflowMode,
+} from "./core";
+import { PiCommandExecutor } from "./pi-adapter";
+
+import {
   classifyAction,
   classifyOutcome,
   inspectEvidence,
@@ -34,37 +52,17 @@ type WorkflowCommand =
   | "/bmad:bmm:create-story"
   | "/bmad:bmm:code-review";
 
-type WorkflowMode = "accept-default" | "party";
-type OperatingMode = "delivery" | "explore" | "custom";
+type WorkflowMode = OttoWorkflowMode;
+type OperatingMode = OttoOperatingMode;
 type ApprovalPolicy = "strict" | "balanced" | "draft";
 type DriftPolicy = "validate" | "continue" | "pause";
 type EvidencePolicy = "strict" | "balanced" | "relaxed";
 type SteeringPolicy = "steady" | "interactive";
-type ActionKind =
-  | "review"
-  | "implementation"
-  | "requirements-validation"
-  | "epic-workflow"
-  | "unknown";
-type OutcomeKind =
-  | "completed"
-  | "blocked"
-  | "needs-input"
-  | "no-work"
-  | "failed"
-  | "unknown";
-type ConfidenceKind = "high" | "medium" | "low" | "unknown";
-type ContinuityKind =
-  | "none"
-  | "fresh-session"
-  | "same-session-compacted"
-  | "compaction-fallback";
-type ResultSourceKind =
-  | "structured"
-  | "heuristic"
-  | "malformed"
-  | "mismatched"
-  | null;
+type ActionKind = OttoActionKind;
+type OutcomeKind = OttoOutcomeKind;
+type ConfidenceKind = OttoConfidenceKind;
+type ContinuityKind = OttoContinuityKind;
+type ResultSourceKind = OttoResultSourceKind;
 
 interface AutopilotPreferences {
   defaults?: {
@@ -130,132 +128,15 @@ interface PreferenceCandidate {
   path: string;
 }
 
-type Phase =
-  | "idle"
-  | "initializing"
-  | "running"
-  | "paused"
-  | "stopped"
-  | "completed"
-  | "error";
-type StopCode =
-  | "none"
-  | "manual-stop"
-  | "paused-for-input"
-  | "blocked-workflow"
-  | "session-rotation-cancelled"
-  | "failure-budget-reached"
-  | "max-iterations-reached"
-  | "queue-drained"
-  | "queue-drained-in-review-only"
-  | "validate-prd-finished"
-  | "validate-prd-in-review-only";
-type QueueState =
-  | "unknown"
-  | "ready"
-  | "in-review-only"
-  | "drained-first-pass"
-  | "drained-ready-for-validation"
-  | "drained-final";
+type Phase = OttoPhase;
+type StopCode = OttoStopCode;
+type QueueState = OttoQueueState;
+type Checkpoint = OttoCheckpoint;
+type RunState = OttoCoreState;
 
-interface Checkpoint {
-  iteration: number;
-  entryId: string;
-  command: string;
-  issueId: string | null;
-  issueTitle: string | null;
-  action: ActionKind | null;
-  outcome: OutcomeKind | null;
-  confidence: ConfidenceKind;
-  queueState: QueueState;
-  continuity: ContinuityKind;
-  continuityReason: string | null;
-  alert: string | null;
-  evidenceSignals: string[];
-  reason: string | null;
-  summary: string;
-  timestamp: number;
-}
+const newRunState = (): RunState => createOttoCoreState();
 
-interface RunState {
-  version: number;
-  runId: string | null;
-  active: boolean;
-  phase: Phase;
-  iteration: number;
-  maxIterations: number;
-  failures: number;
-  maxFailures: number;
-  lastCommand: string | null;
-  lastAction: ActionKind | null;
-  lastDecisionReason: string | null;
-  lastOutcome: OutcomeKind | null;
-  lastConfidence: ConfidenceKind;
-  lastResultSource: ResultSourceKind;
-  lastEvidenceAlert: string | null;
-  lastEvidenceSignals: string[];
-  lastCommandMode: WorkflowMode;
-  lastAutonomyMode: OperatingMode;
-  lastPolicySummary: string;
-  lastContinuation: ContinuityKind;
-  lastContinuationReason: string | null;
-  lastIssueId: string | null;
-  lastIssueTitle: string | null;
-  lastError: string | null;
-  lastProgressAt: number;
-  stopReason: string | null;
-  stopCode: StopCode;
-  queueState: QueueState;
-  emptyQueuePasses: number;
-  checkpoints: Checkpoint[];
-  awaitingCommand: string | null;
-  awaitingPrompt: string | null;
-  awaitingToken: string | null;
-  awaitingStarted: boolean;
-  freshSessionBetweenSteps: boolean;
-}
-
-const newRunState = (): RunState => ({
-  version: 1,
-  runId: null,
-  active: false,
-  phase: "idle",
-  iteration: 0,
-  maxIterations: 25,
-  failures: 0,
-  maxFailures: 3,
-  lastCommand: null,
-  lastAction: null,
-  lastDecisionReason: null,
-  lastOutcome: null,
-  lastConfidence: "unknown",
-  lastResultSource: null,
-  lastEvidenceAlert: null,
-  lastEvidenceSignals: [],
-  lastCommandMode: "accept-default",
-  lastAutonomyMode: "delivery",
-  lastPolicySummary:
-    "approval=strict, drift=validate, evidence=strict, steering=steady",
-  lastContinuation: "none",
-  lastContinuationReason: null,
-  lastIssueId: null,
-  lastIssueTitle: null,
-  lastError: null,
-  lastProgressAt: Date.now(),
-  stopReason: null,
-  stopCode: "none",
-  queueState: "unknown",
-  emptyQueuePasses: 0,
-  checkpoints: [],
-  awaitingCommand: null,
-  awaitingPrompt: null,
-  awaitingToken: null,
-  awaitingStarted: false,
-  freshSessionBetweenSteps: true,
-});
-
-const newWorkflowToken = (): string =>
-  `otto-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+const newWorkflowToken = (): string => createWorkflowToken();
 
 const MODE_DEFAULTS: Record<
   Exclude<OperatingMode, "custom">,
@@ -1277,6 +1158,7 @@ const matchesQueuedWorkflowPrompt = (
 };
 
 export default function otto(pi: ExtensionAPI) {
+  const commandExecutor = new PiCommandExecutor(pi);
   let state = newRunState();
   let turnHadToolError = false;
   let onboardingHintShown = false;
@@ -1515,9 +1397,9 @@ export default function otto(pi: ExtensionAPI) {
     hasInReview: boolean;
   }> => {
     const [reviewable, ready, inReview] = await Promise.all([
-      pi.exec("td", ["reviewable"], { timeout: 20000 }),
-      pi.exec("td", ["ready"], { timeout: 20000 }),
-      pi.exec("td", ["in-review"], { timeout: 20000 }),
+      commandExecutor.executeShell("td", ["reviewable"], 20000),
+      commandExecutor.executeShell("td", ["ready"], 20000),
+      commandExecutor.executeShell("td", ["in-review"], 20000),
     ]);
 
     const immediateOutput = `${reviewable.stdout}\n${ready.stdout}`;

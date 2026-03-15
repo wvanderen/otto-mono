@@ -171,20 +171,24 @@ This supports mixed autonomy rather than one fixed control philosophy.
 
 Current source of truth:
 
-- `examples/pi-extension/otto.ts`
-- `examples/pi-extension/skills/otto/SKILL.md`
+- `packages/otto/src/otto.ts`
+- `packages/otto/src/otto-result.mjs`
+- `packages/otto/skills/otto/SKILL.md`
 
 Before `npm pack` or `npm publish`, the package sync step copies that source into:
 
-- `packages/otto/src/otto.ts`
-- `packages/otto/skills/otto/SKILL.md`
+- `examples/pi-extension/otto.ts`
+- `examples/pi-extension/otto-result.mjs`
+- `examples/pi-extension/skills/otto/SKILL.md`
+- `.pi/extensions/otto.ts`
+- `.pi/extensions/otto-result.mjs`
 
-That keeps local Pi iteration centered on the example extension while
-still shipping the real source in the published Otto package.
+That keeps the package as the implementation source of truth while still
+updating the local prototype and project-local Pi extension copies.
 
 This packaging model is temporary. The approved direction is to move Otto
-toward a package-first hybrid core so runtime logic is no longer split
-between example and package copies.
+toward a package-first hybrid core so the remaining prototype sync layer
+can eventually disappear entirely.
 
 ## Roadmap
 
