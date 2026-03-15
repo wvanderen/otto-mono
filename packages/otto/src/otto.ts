@@ -18,6 +18,7 @@ import {
   buildStopNotification,
   buildOttoStatusDetail,
   buildOttoStatusSnapshot,
+  completeAwaitingWorkflowStart,
   compactedContinueReason,
   compactionFallbackReason,
   createOttoCoreState,
@@ -26,6 +27,7 @@ import {
   freshSessionFailedWarning,
   freshSessionUnsupportedWarning,
   initializeOttoRunState,
+  markAwaitingWorkflowStarted,
   OTTO_COMPACTION_INSTRUCTIONS,
   pauseOttoRunState,
   parseOttoRemainingWork,
@@ -35,6 +37,9 @@ import {
   resolveOttoStartReason,
   resumeNextStepReason,
   resumeOttoRunState,
+  registerOttoToolError,
+  shouldIgnoreAgentEnd,
+  startOttoTurn,
   type OttoActionKind,
   type OttoCheckpoint,
   type OttoConfidenceKind,
@@ -1465,13 +1470,14 @@ export default function otto(pi: ExtensionAPI) {
   pi.on("session_tree", async (_event, ctx) => restoreState(ctx));
 
   pi.on("turn_start", async () => {
-    turnHadToolError = false;
+    turnHadToolError = startOttoTurn();
   });
 
   pi.on("tool_result", async (event) => {
     if (state.active && event.isError) {
-      turnHadToolError = true;
-      state.lastError = `Tool ${event.toolName} failed`;
+      const result = registerOttoToolError(state, event.toolName);
+      state = result.state;
+      turnHadToolError = result.turnHadToolError;
     }
   });
 
@@ -1485,27 +1491,19 @@ export default function otto(pi: ExtensionAPI) {
         state.awaitingToken,
       )
     ) {
-      state.awaitingStarted = true;
-      state.lastProgressAt = Date.now();
+      state = markAwaitingWorkflowStarted(state);
       updateUi(ctx);
     }
   });
 
   pi.on("agent_end", async (event, ctx) => {
-    if (!state.active) return;
-    if (
-      state.phase === "paused" ||
-      state.phase === "stopped" ||
-      state.phase === "completed" ||
-      state.phase === "error"
-    )
-      return;
-    if (!state.awaitingCommand) return;
-    if (!state.awaitingStarted) return;
+    if (shouldIgnoreAgentEnd(state)) return;
 
-    const completedCommand = state.awaitingCommand;
-    const completedToken = state.awaitingToken;
-    state.awaitingStarted = false;
+    const completion = completeAwaitingWorkflowStart(state);
+    state = completion.state;
+    const completedCommand = completion.completedCommand;
+    const completedToken = completion.completedToken;
+    if (!completedCommand) return;
 
     if (completedCommand === CONTINUE_COMMAND) {
       if (ctx.hasUI) {
