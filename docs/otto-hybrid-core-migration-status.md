@@ -45,11 +45,21 @@ These package-owned modules now exist and are actively used:
 - `packages/otto/src/core/event-state.ts`
 - `packages/otto/src/core/agent-result.ts`
 
+The package contracts now explicitly document boundary ownership:
+
+- core owns stable interfaces for session runtime, command execution,
+  operator UI, and session-control affordances
+- `OttoCoreState` is the shared run-state payload that orchestration owns
+  independently of Pi UI/runtime wiring
+- Pi adapter implementations now conform to those package-owned contracts
+  instead of relying on ad hoc extension-context calls in `otto.ts`
+
 These modules now own substantial behavior that used to live inline in
 `packages/otto/src/otto.ts`, including:
 
 - state models and state transitions
 - workflow queue bookkeeping
+- queue-drain, td-drift, and PRD-validation routing decisions
 - stop and failure handling helpers
 - status rendering inputs
 - event-state bookkeeping
@@ -108,6 +118,8 @@ The live Otto entrypoint now uses the extracted package modules for:
 - event-state bookkeeping
 - agent-result bookkeeping
 - queue progression helpers
+- fresh-session continuation through the adapter-owned session-control
+  contract rather than direct `ctx.newSession()` calls
 
 ## What Is Still Missing
 
@@ -117,9 +129,9 @@ The biggest remaining extraction target is still the deeper
 `agent_end` processing logic. In particular, these areas still live too
 close to Pi event wiring:
 
-- drift-policy branching
-- PRD-validation routing decisions
-- drained-queue decisions
+- some drift/validation sequencing still lives inside the event handler
+- final persistence ordering around queue/drain transitions still lives in
+  the entrypoint
 - some iteration continuation logic
 - event-handler composition and persistence ordering
 
@@ -128,7 +140,8 @@ close to Pi event wiring:
 The SDK runtime exists, but the overall migration is not complete yet:
 
 - Otto still uses Pi event/session affordances directly in some places
-- `/otto-continue` still uses direct `ctx.newSession()` handling
+- `/otto-continue` now uses the adapter-owned session-control boundary, but
+  full continuation flow is still orchestrated from `otto.ts`
 - runtime diagnostics such as `/otto-check` are not implemented on the new
   abstractions yet
 - session inspection and operator recovery surfaces are still incomplete

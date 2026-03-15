@@ -4,7 +4,7 @@ import type {
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 
-import { OttoCoreService } from "../core";
+import { OttoCoreService, type OttoSessionController } from "../core";
 import { SdkOttoSessionRuntime } from "../runtime";
 import { PiCommandExecutor } from "./commands";
 import { PiSessionController } from "./session-control";
@@ -14,7 +14,7 @@ export interface OttoPiServices {
   core: OttoCoreService;
   commands: PiCommandExecutor;
   sessions: SdkOttoSessionRuntime;
-  sessionControl: PiSessionController;
+  sessionControl: OttoSessionController;
   ui: PiOperatorUi;
 }
 
@@ -24,7 +24,7 @@ export const createOttoPiServices = (
 ): OttoPiServices => {
   const commands = new PiCommandExecutor(pi);
   const sessions = new SdkOttoSessionRuntime({ cwd: process.cwd() });
-  const sessionControl = new PiSessionController();
+  const sessionControl = new PiSessionController(ctx);
   const ui = new PiOperatorUi(ctx);
   const core = new OttoCoreService({ commands, sessions, ui });
 

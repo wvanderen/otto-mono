@@ -1,6 +1,10 @@
 import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 
-import type { OttoOperatorUi, OttoStatusSnapshot } from "../core";
+import type {
+  OttoNotificationLevel,
+  OttoOperatorUi,
+  OttoStatusSnapshot,
+} from "../core";
 
 export class PiOperatorUi implements OttoOperatorUi {
   constructor(private readonly ctx: ExtensionCommandContext) {}
@@ -9,10 +13,7 @@ export class PiOperatorUi implements OttoOperatorUi {
     return this.ctx.hasUI;
   }
 
-  notify(
-    message: string,
-    level: "info" | "warning" | "error" | "success",
-  ): void {
+  notify(message: string, level: OttoNotificationLevel): void {
     if (!this.ctx.hasUI) return;
     this.ctx.ui.notify(message, level);
   }

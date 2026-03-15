@@ -1,5 +1,7 @@
 export type OttoSessionPolicy = "require-fresh" | "allow-compatibility";
 
+export type OttoNotificationLevel = "info" | "warning" | "error" | "success";
+
 export type OttoSessionSupport =
   | "unknown"
   | "supported"
@@ -15,6 +17,8 @@ export type OttoSessionRotationOutcome =
 export type OttoWorkflowMode = "accept-default" | "party";
 
 export type OttoOperatingMode = "delivery" | "explore" | "custom";
+
+export type OttoDriftPolicy = "validate" | "continue" | "pause";
 
 export type OttoActionKind =
   | "review"
@@ -110,6 +114,10 @@ export interface OttoSessionOptions {
   cwd?: string;
 }
 
+export interface OttoQueueWorkflowOptions {
+  followUp?: boolean;
+}
+
 export interface OttoStatusSnapshot {
   runId: string | null;
   phase: OttoPhase;
@@ -129,6 +137,8 @@ export interface ExecResult {
   exitCode: number;
 }
 
+// Core orchestration depends on session lifecycle through this runtime contract
+// so the Otto engine can stay package-owned while adapters translate SDK quirks.
 export interface OttoSessionRuntime {
   createRunSession(options?: OttoSessionOptions): Promise<OttoSessionHandle>;
   continueRunSession(runId: string): Promise<OttoSessionHandle>;
@@ -137,8 +147,14 @@ export interface OttoSessionRuntime {
   rotateSession(handle: OttoSessionHandle): Promise<OttoSessionHandle>;
 }
 
+// Workflow dispatch belongs to the boundary so Otto can drive Pi today and a
+// future headless/CLI surface later without changing run logic.
 export interface OttoCommandExecutor {
-  queueWorkflowCommand(command: string, prompt: string): Promise<void>;
+  queueWorkflowCommand(
+    command: string,
+    prompt: string,
+    options?: OttoQueueWorkflowOptions,
+  ): Promise<void>;
   executeShell(
     command: string,
     args: string[],
@@ -146,11 +162,9 @@ export interface OttoCommandExecutor {
   ): Promise<ExecResult>;
 }
 
+// Operator interaction is adapter-owned; the core emits snapshots and messages.
 export interface OttoOperatorUi {
-  notify(
-    message: string,
-    level: "info" | "warning" | "error" | "success",
-  ): void;
+  notify(message: string, level: OttoNotificationLevel): void;
   isInteractive(): boolean;
   choose<T>(
     title: string,
@@ -158,4 +172,27 @@ export interface OttoOperatorUi {
   ): Promise<T | null>;
   select(title: string, options: string[]): Promise<string | null>;
   renderStatus(snapshot: OttoStatusSnapshot): void;
+}
+
+export type OttoSessionControlStatus =
+  | "success"
+  | "cancelled"
+  | "unsupported"
+  | "failed";
+
+export interface OttoSessionRotationResult {
+  status: OttoSessionControlStatus;
+}
+
+export interface OttoCompactionRequest {
+  customInstructions: string;
+  onComplete: () => void;
+  onError: () => void;
+}
+
+// Fresh-session rotation and compaction stay adapter-owned because they are
+// interactive runtime affordances rather than Otto policy decisions.
+export interface OttoSessionController {
+  rotate(): Promise<OttoSessionRotationResult>;
+  compact(request: OttoCompactionRequest): void;
 }

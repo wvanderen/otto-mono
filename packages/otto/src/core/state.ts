@@ -34,6 +34,9 @@ export interface OttoCheckpoint {
   timestamp: number;
 }
 
+// OttoCoreState is the shared run-state payload that survives beyond the Pi
+// adapter. Entry points may decorate it for UI, but orchestration should only
+// depend on these package-owned fields and helpers.
 export interface OttoCoreState extends OttoStatusSnapshot {
   version: number;
   active: boolean;

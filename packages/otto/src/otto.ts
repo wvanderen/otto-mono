@@ -19,6 +19,7 @@ import {
   applyStopState,
   advanceOttoIteration,
   buildFailureBudgetReason,
+  buildOttoTdDriftReason,
   buildStopNotification,
   buildOttoStatusDetail,
   buildOttoStatusSnapshot,
@@ -33,17 +34,20 @@ import {
   initializeOttoRunState,
   markAwaitingWorkflowStarted,
   markOttoTdDrift,
+  mergeOttoEvidenceSignals,
   OTTO_COMPACTION_INSTRUCTIONS,
   pauseOttoRunState,
   parseOttoRemainingWork,
   prepareCompaction,
   prepareFreshSessionHop,
   resetOttoQueueProgress,
+  resolveOttoQueueDrainDecision,
+  resolveOttoQueueStateFromWork,
   resolveOttoSessionPolicy,
   resolveOttoStartReason,
+  resolveOttoTdDriftAction,
   resumeNextStepReason,
   resumeOttoRunState,
-  setOttoEmptyQueuePasses,
   updateOttoQueueState,
   registerOttoToolError,
   shouldIgnoreAgentEnd,
@@ -52,6 +56,7 @@ import {
   type OttoCheckpoint,
   type OttoConfidenceKind,
   type OttoContinuityKind,
+  type OttoDriftPolicy,
   type OttoCoreState,
   type OttoOperatingMode,
   type OttoOutcomeKind,
@@ -95,7 +100,7 @@ type WorkflowCommand =
 type WorkflowMode = OttoWorkflowMode;
 type OperatingMode = OttoOperatingMode;
 type ApprovalPolicy = "strict" | "balanced" | "draft";
-type DriftPolicy = "validate" | "continue" | "pause";
+type DriftPolicy = OttoDriftPolicy;
 type EvidencePolicy = "strict" | "balanced" | "relaxed";
 type SteeringPolicy = "steady" | "interactive";
 type ActionKind = OttoActionKind;
@@ -381,11 +386,6 @@ const checkpointContextLabel = (checkpoint: Checkpoint): string => {
   );
   return issue !== "-" ? issue : shortText(checkpoint.command, 42);
 };
-
-const mergeEvidenceSignals = (
-  current: string[],
-  additions: string[],
-): string[] => [...new Set([...current, ...additions])];
 
 const stateAlert = (runState: RunState): string | null => {
   if (runState.lastEvidenceAlert) {
@@ -1329,7 +1329,7 @@ export default function otto(pi: ExtensionAPI) {
     persistState("direct-session-hop-attempt");
     updateUi(ctx);
 
-    const rotation = await services.sessionControl.rotate(ctx);
+    const rotation = await services.sessionControl.rotate();
 
     if (rotation.status === "unsupported") {
       services.ui.notify(freshSessionUnsupportedWarning(), "warning");
@@ -1367,7 +1367,7 @@ export default function otto(pi: ExtensionAPI) {
     persistState("compact-before-next-step");
     updateUi(ctx);
 
-    getServices(ctx).sessionControl.compact(ctx, {
+    getServices(ctx).sessionControl.compact({
       customInstructions: OTTO_COMPACTION_INSTRUCTIONS,
       onComplete: () => {
         if (!state.active || state.phase !== "running") return;
@@ -1647,21 +1647,13 @@ export default function otto(pi: ExtensionAPI) {
       hasInReview = workState.hasInReview;
       state = updateOttoQueueState(
         state,
-        workLeft
-          ? "ready"
-          : hasInReview
-            ? "in-review-only"
-            : state.emptyQueuePasses >= 1
-              ? "drained-ready-for-validation"
-              : "drained-first-pass",
+        resolveOttoQueueStateFromWork(state, workState),
       );
       state.lastError = null;
 
       if (state.lastOutcome === "no-work" && (workLeft || hasInReview)) {
-        const tdDriftReason = workLeft
-          ? "Workflow reported no-work, but td still has ready or reviewable issues."
-          : "Workflow reported no-work, but td still has in-review issues.";
-        const evidenceSignals = mergeEvidenceSignals(
+        const tdDriftReason = buildOttoTdDriftReason(workState);
+        const evidenceSignals = mergeOttoEvidenceSignals(
           state.lastEvidenceSignals,
           ["td-drift", "result-drift"],
         );
@@ -1675,10 +1667,13 @@ export default function otto(pi: ExtensionAPI) {
           ctx.ui.notify(tdDriftReason, "warning");
         }
 
-        if (
-          autonomy.drift === "pause" &&
-          completedCommand !== VALIDATE_PRD_COMMAND
-        ) {
+        const driftAction = resolveOttoTdDriftAction({
+          driftPolicy: autonomy.drift,
+          completedCommand,
+          validatePrdCommand: VALIDATE_PRD_COMMAND,
+        });
+
+        if (driftAction === "pause") {
           stopRun(
             ctx,
             "paused",
@@ -1688,10 +1683,7 @@ export default function otto(pi: ExtensionAPI) {
           return;
         }
 
-        if (
-          autonomy.drift === "validate" &&
-          completedCommand !== VALIDATE_PRD_COMMAND
-        ) {
+        if (driftAction === "validate") {
           state = updateOttoQueueState(state, "drained-ready-for-validation");
           persistState("loop-run-validate-prd-td-drift");
           queueWorkflowCommand(
@@ -1710,64 +1702,39 @@ export default function otto(pi: ExtensionAPI) {
     }
 
     if (!workLeft) {
-      if (hasInReview && state.freshSessionBetweenSteps) {
-        state = setOttoEmptyQueuePasses(state, 0);
-        state = updateOttoQueueState(state, "in-review-only");
-        persistState("loop-continue-in-review-session-hop");
+      const decision = resolveOttoQueueDrainDecision({
+        state,
+        completedCommand,
+        nextStepCommand: NEXT_STEP_COMMAND,
+        validatePrdCommand: VALIDATE_PRD_COMMAND,
+        hasInReview,
+        shouldValidate: evidence.shouldValidate,
+        evidenceSignals: evidence.signals,
+      });
+      state = decision.state;
+
+      if (decision.action.kind === "continue-next-step") {
+        persistState(decision.action.persistReason);
         queueNextStepIteration(ctx);
         return;
       }
 
-      state = setOttoEmptyQueuePasses(state, state.emptyQueuePasses + 1);
-
-      if (
-        evidence.shouldValidate &&
-        completedCommand !== VALIDATE_PRD_COMMAND
-      ) {
-        state = updateOttoQueueState(state, "drained-ready-for-validation");
-        persistState("loop-run-validate-prd-evidence-gap");
-        queueWorkflowCommand(
-          ctx,
-          VALIDATE_PRD_COMMAND,
-          `Completion evidence was weak (${evidence.signals.join(", ")}); validate against the PRD before stopping.`,
-        );
+      if (decision.action.kind === "queue-validate-prd") {
+        persistState(decision.action.persistReason);
+        queueWorkflowCommand(ctx, VALIDATE_PRD_COMMAND, decision.action.prompt);
         return;
       }
 
-      if (completedCommand === VALIDATE_PRD_COMMAND) {
-        state = updateOttoQueueState(
-          state,
-          hasInReview ? "in-review-only" : "drained-final",
-        );
+      if (decision.action.kind === "stop-completed") {
         stopRun(
           ctx,
-          "completed",
-          hasInReview
-            ? "Only in-review issues remain after PRD validation and session hopping is disabled."
-            : "No reviewable, ready, epic-maintenance, or PRD gap work remains.",
-          hasInReview ? "validate-prd-in-review-only" : "validate-prd-finished",
+          decision.action.phase,
+          decision.action.reason,
+          decision.action.stopCode,
         );
         return;
       }
 
-      if (
-        state.emptyQueuePasses === 1 ||
-        (completedCommand === NEXT_STEP_COMMAND &&
-          state.lastAction === "epic-workflow")
-      ) {
-        state = updateOttoQueueState(state, "drained-first-pass");
-        persistState("loop-continue-drained-queue-sweep");
-        queueNextStepIteration(ctx);
-        return;
-      }
-
-      state = updateOttoQueueState(state, "drained-ready-for-validation");
-      persistState("loop-run-validate-prd");
-      queueWorkflowCommand(
-        ctx,
-        VALIDATE_PRD_COMMAND,
-        "Ready/reviewable work is drained; validate against the PRD and reopen any real gaps.",
-      );
       return;
     }
 
@@ -1806,13 +1773,33 @@ export default function otto(pi: ExtensionAPI) {
     persistState("session-hop-command-received");
     updateUi(ctx);
 
-    const result = await ctx.newSession();
-    if (result.cancelled) {
+    const result = await getServices(ctx).sessionControl.rotate();
+    if (result.status === "cancelled") {
       stopRun(
         ctx,
         "error",
         "Session rotation cancelled.",
         "session-rotation-cancelled",
+      );
+      return;
+    }
+
+    if (result.status === "unsupported") {
+      stopRun(
+        ctx,
+        "error",
+        "Session rotation is unavailable in this Pi runtime.",
+        "session-rotation-unsupported",
+      );
+      return;
+    }
+
+    if (result.status === "failed") {
+      stopRun(
+        ctx,
+        "error",
+        "Session rotation failed.",
+        "session-rotation-failed",
       );
       return;
     }

@@ -1,19 +1,17 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 
-export interface PiSessionRotationResult {
-  status: "success" | "cancelled" | "unsupported" | "failed";
-}
+import type {
+  OttoCompactionRequest,
+  OttoSessionController,
+  OttoSessionRotationResult,
+} from "../core";
 
-export interface PiCompactionOptions {
-  customInstructions: string;
-  onComplete: () => void;
-  onError: () => void;
-}
+export class PiSessionController implements OttoSessionController {
+  constructor(private readonly ctx: ExtensionContext) {}
 
-export class PiSessionController {
-  async rotate(ctx: ExtensionContext): Promise<PiSessionRotationResult> {
+  async rotate(): Promise<OttoSessionRotationResult> {
     const maybeNewSession = (
-      ctx as ExtensionContext & {
+      this.ctx as ExtensionContext & {
         newSession?: () => Promise<{ cancelled?: boolean }>;
       }
     ).newSession;
@@ -23,18 +21,18 @@ export class PiSessionController {
     }
 
     try {
-      const result = await maybeNewSession.call(ctx);
+      const result = await maybeNewSession.call(this.ctx);
       return { status: result.cancelled ? "cancelled" : "success" };
     } catch {
       return { status: "failed" };
     }
   }
 
-  compact(ctx: ExtensionContext, options: PiCompactionOptions): void {
-    ctx.compact({
-      customInstructions: options.customInstructions,
-      onComplete: options.onComplete,
-      onError: options.onError,
+  compact(request: OttoCompactionRequest): void {
+    this.ctx.compact({
+      customInstructions: request.customInstructions,
+      onComplete: request.onComplete,
+      onError: request.onError,
     });
   }
 }

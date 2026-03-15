@@ -1,7 +1,11 @@
-import type { OttoOperatorUi, OttoStatusSnapshot } from "../core";
+import type {
+  OttoNotificationLevel,
+  OttoOperatorUi,
+  OttoStatusSnapshot,
+} from "../core";
 
 export class NullOttoOperatorUi implements OttoOperatorUi {
-  notify(): void {}
+  notify(_message: string, _level: OttoNotificationLevel): void {}
 
   isInteractive(): boolean {
     return false;
