@@ -12,10 +12,12 @@ import type {
 import {
   appendOttoCheckpoint,
   applyFailureState,
+  applyInitCompletion,
   applyAgentResultUpdate,
   applyQueuedWorkflow,
   applyOttoSessionStatus,
   applyStopState,
+  advanceOttoIteration,
   buildFailureBudgetReason,
   buildStopNotification,
   buildOttoStatusDetail,
@@ -36,10 +38,13 @@ import {
   parseOttoRemainingWork,
   prepareCompaction,
   prepareFreshSessionHop,
+  resetOttoQueueProgress,
   resolveOttoSessionPolicy,
   resolveOttoStartReason,
   resumeNextStepReason,
   resumeOttoRunState,
+  setOttoEmptyQueuePasses,
+  updateOttoQueueState,
   registerOttoToolError,
   shouldIgnoreAgentEnd,
   startOttoTurn,
@@ -1610,11 +1615,7 @@ export default function otto(pi: ExtensionAPI) {
     }
 
     if (completedCommand === INIT_COMMAND) {
-      state.emptyQueuePasses = 0;
-      state.queueState = "ready";
-      state.phase = "running";
-      state.lastError = null;
-      state.stopCode = "none";
+      state = applyInitCompletion(state);
       persistState("init-complete");
       if (ctx.hasUI) {
         ctx.ui.notify(
@@ -1626,7 +1627,7 @@ export default function otto(pi: ExtensionAPI) {
       return;
     }
 
-    state.iteration += 1;
+    state = advanceOttoIteration(state);
     if (state.iteration >= state.maxIterations) {
       stopRun(
         ctx,
@@ -1644,13 +1645,16 @@ export default function otto(pi: ExtensionAPI) {
       const autonomy = resolveAutonomy(loadAutopilotPreferences().preferences);
       workLeft = workState.hasImmediateWork;
       hasInReview = workState.hasInReview;
-      state.queueState = workLeft
-        ? "ready"
-        : hasInReview
-          ? "in-review-only"
-          : state.emptyQueuePasses >= 1
-            ? "drained-ready-for-validation"
-            : "drained-first-pass";
+      state = updateOttoQueueState(
+        state,
+        workLeft
+          ? "ready"
+          : hasInReview
+            ? "in-review-only"
+            : state.emptyQueuePasses >= 1
+              ? "drained-ready-for-validation"
+              : "drained-first-pass",
+      );
       state.lastError = null;
 
       if (state.lastOutcome === "no-work" && (workLeft || hasInReview)) {
@@ -1688,7 +1692,7 @@ export default function otto(pi: ExtensionAPI) {
           autonomy.drift === "validate" &&
           completedCommand !== VALIDATE_PRD_COMMAND
         ) {
-          state.queueState = "drained-ready-for-validation";
+          state = updateOttoQueueState(state, "drained-ready-for-validation");
           persistState("loop-run-validate-prd-td-drift");
           queueWorkflowCommand(
             ctx,
@@ -1707,20 +1711,20 @@ export default function otto(pi: ExtensionAPI) {
 
     if (!workLeft) {
       if (hasInReview && state.freshSessionBetweenSteps) {
-        state.emptyQueuePasses = 0;
-        state.queueState = "in-review-only";
+        state = setOttoEmptyQueuePasses(state, 0);
+        state = updateOttoQueueState(state, "in-review-only");
         persistState("loop-continue-in-review-session-hop");
         queueNextStepIteration(ctx);
         return;
       }
 
-      state.emptyQueuePasses += 1;
+      state = setOttoEmptyQueuePasses(state, state.emptyQueuePasses + 1);
 
       if (
         evidence.shouldValidate &&
         completedCommand !== VALIDATE_PRD_COMMAND
       ) {
-        state.queueState = "drained-ready-for-validation";
+        state = updateOttoQueueState(state, "drained-ready-for-validation");
         persistState("loop-run-validate-prd-evidence-gap");
         queueWorkflowCommand(
           ctx,
@@ -1731,7 +1735,10 @@ export default function otto(pi: ExtensionAPI) {
       }
 
       if (completedCommand === VALIDATE_PRD_COMMAND) {
-        state.queueState = hasInReview ? "in-review-only" : "drained-final";
+        state = updateOttoQueueState(
+          state,
+          hasInReview ? "in-review-only" : "drained-final",
+        );
         stopRun(
           ctx,
           "completed",
@@ -1748,13 +1755,13 @@ export default function otto(pi: ExtensionAPI) {
         (completedCommand === NEXT_STEP_COMMAND &&
           state.lastAction === "epic-workflow")
       ) {
-        state.queueState = "drained-first-pass";
+        state = updateOttoQueueState(state, "drained-first-pass");
         persistState("loop-continue-drained-queue-sweep");
         queueNextStepIteration(ctx);
         return;
       }
 
-      state.queueState = "drained-ready-for-validation";
+      state = updateOttoQueueState(state, "drained-ready-for-validation");
       persistState("loop-run-validate-prd");
       queueWorkflowCommand(
         ctx,
@@ -1764,8 +1771,7 @@ export default function otto(pi: ExtensionAPI) {
       return;
     }
 
-    state.emptyQueuePasses = 0;
-    state.queueState = "ready";
+    state = resetOttoQueueProgress(state);
 
     persistState("loop-continue");
     queueNextStepIteration(ctx);

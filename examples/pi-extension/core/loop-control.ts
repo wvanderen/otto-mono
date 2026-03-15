@@ -8,6 +8,7 @@ import {
 import type {
   OttoOperatingMode,
   OttoPhase,
+  OttoQueueState,
   OttoStopCode,
   OttoWorkflowMode,
 } from "./contracts";
@@ -89,4 +90,42 @@ export const buildStopNotification = (
 ): { message: string; level: "info" | "error" } => ({
   message: `Otto ${phase}: ${reason}`,
   level: phase === "error" ? "error" : "info",
+});
+
+export const applyInitCompletion = (state: OttoCoreState): OttoCoreState => ({
+  ...state,
+  emptyQueuePasses: 0,
+  queueState: "ready",
+  phase: "running",
+  lastError: null,
+  stopCode: "none",
+});
+
+export const advanceOttoIteration = (state: OttoCoreState): OttoCoreState => ({
+  ...state,
+  iteration: state.iteration + 1,
+});
+
+export const updateOttoQueueState = (
+  state: OttoCoreState,
+  queueState: OttoQueueState,
+): OttoCoreState => ({
+  ...state,
+  queueState,
+});
+
+export const setOttoEmptyQueuePasses = (
+  state: OttoCoreState,
+  emptyQueuePasses: number,
+): OttoCoreState => ({
+  ...state,
+  emptyQueuePasses,
+});
+
+export const resetOttoQueueProgress = (
+  state: OttoCoreState,
+): OttoCoreState => ({
+  ...state,
+  emptyQueuePasses: 0,
+  queueState: "ready",
 });

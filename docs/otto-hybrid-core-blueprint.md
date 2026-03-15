@@ -7,6 +7,7 @@ It builds on:
 
 - `docs/otto-manifesto.md`
 - `docs/otto-dna-roadmap.md`
+- `docs/otto-hybrid-core-migration-status.md`
 - `docs/otto-pi-session-capability-matrix.md`
 - `docs/otto-runtime-session-detection-design.md`
 - `docs/otto-session-reset-install-onboarding-checks.md`
