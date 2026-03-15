@@ -151,9 +151,11 @@ export interface OttoOperatorUi {
     message: string,
     level: "info" | "warning" | "error" | "success",
   ): void;
+  isInteractive(): boolean;
   choose<T>(
     title: string,
     options: Array<{ label: string; value: T }>,
   ): Promise<T | null>;
+  select(title: string, options: string[]): Promise<string | null>;
   renderStatus(snapshot: OttoStatusSnapshot): void;
 }

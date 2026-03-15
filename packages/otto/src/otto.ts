@@ -689,12 +689,7 @@ const onboardingChoice = async <T>(
   title: string,
   choices: PreferenceChoice<T>[],
 ): Promise<T | null> => {
-  const selected = await ctx.ui.select(
-    title,
-    choices.map((choice) => choice.label),
-  );
-  if (!selected) return null;
-  return choices.find((choice) => choice.label === selected)?.value ?? null;
+  return createOttoPiServices(pi, ctx).ui.choose(title, choices);
 };
 
 const onboardingWorkflowOverride = async (
@@ -1268,7 +1263,11 @@ export default function otto(pi: ExtensionAPI) {
     const options = ctx.isIdle()
       ? undefined
       : { deliverAs: "followUp" as const };
-    pi.sendUserMessage(prompt, options);
+    if (options) {
+      pi.sendUserMessage(prompt, options);
+    } else {
+      void commandExecutor.queueWorkflowCommand(command, prompt);
+    }
     state.awaitingCommand = command;
     state.awaitingPrompt = prompt;
     state.awaitingToken = token;
@@ -1473,12 +1472,12 @@ export default function otto(pi: ExtensionAPI) {
           : { deliverAs: "followUp" as const };
         pi.sendUserMessage(prompt, options);
         if (error && ctx.hasUI) {
-          ctx.ui.notify(
+          createOttoPiServices(pi, ctx).ui.notify(
             `Otto preferences fallback: ${source} could not be loaded (${error})`,
             "warning",
           );
         }
-        ctx.ui.notify(`Queued ${command}`, "info");
+        createOttoPiServices(pi, ctx).ui.notify(`Queued ${command}`, "info");
       },
     });
   };
@@ -2124,14 +2123,15 @@ export default function otto(pi: ExtensionAPI) {
     _args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
+    const services = createOttoPiServices(pi, ctx);
     if (!state.active) {
-      ctx.ui.notify("Otto is not running.", "warning");
+      services.ui.notify("Otto is not running.", "warning");
       return;
     }
     state.phase = "paused";
     persistState("pause");
     updateUi(ctx);
-    ctx.ui.notify("Otto paused.", "info");
+    services.ui.notify("Otto paused.", "info");
   };
 
   registerOttoCommand(
@@ -2200,8 +2200,9 @@ export default function otto(pi: ExtensionAPI) {
     args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
+    const services = createOttoPiServices(pi, ctx);
     if (!state.active) {
-      ctx.ui.notify("Otto is not running.", "warning");
+      services.ui.notify("Otto is not running.", "warning");
       return;
     }
     const reason = args.trim() || "Stopped manually.";
@@ -2219,33 +2220,34 @@ export default function otto(pi: ExtensionAPI) {
     _args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
-    if (!ctx.hasUI) {
-      ctx.ui.notify("/otto-dive requires interactive mode.", "error");
+    const services = createOttoPiServices(pi, ctx);
+    if (!services.ui.isInteractive()) {
+      services.ui.notify("/otto-dive requires interactive mode.", "error");
       return;
     }
     if (state.checkpoints.length === 0) {
-      ctx.ui.notify("No Otto checkpoints available.", "warning");
+      services.ui.notify("No Otto checkpoints available.", "warning");
       return;
     }
 
     const recent = [...state.checkpoints].reverse().slice(0, 30);
     const options = recent.map((checkpoint) => checkpointLabel(checkpoint));
 
-    const selected = await ctx.ui.select("Otto checkpoints", options);
+    const selected = await services.ui.select("Otto checkpoints", options);
     if (!selected) return;
 
     const index = options.indexOf(selected);
     if (index < 0) return;
     const checkpoint = recent[index];
 
-    const action = await ctx.ui.select(
+    const action = await services.ui.select(
       "Checkpoint action",
       checkpointActionOptions(checkpoint),
     );
     if (!action) return;
 
     if (action.startsWith("Show details")) {
-      ctx.ui.notify(
+      services.ui.notify(
         [
           `Checkpoint: #${checkpoint.iteration}`,
           `Time: ${new Date(checkpoint.timestamp).toLocaleString()}`,
