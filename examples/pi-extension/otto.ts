@@ -63,6 +63,7 @@ import {
   type OttoPhase,
   type OttoQueueState,
   type OttoResultSourceKind,
+  type OttoSessionHandle,
   type OttoStopCode,
   type OttoWorkflowMode,
 } from "./core";
@@ -1240,6 +1241,19 @@ export default function otto(pi: ExtensionAPI) {
     state.lastProgressAt = Date.now();
   };
 
+  const currentSessionHandle = (
+    ctx: ExtensionContext,
+    runId: string | null,
+    policy: RunState["sessionPolicy"],
+  ): OttoSessionHandle => ({
+    sessionId: ctx.sessionManager.getSessionId(),
+    sessionPath: ctx.sessionManager.getSessionFile() ?? null,
+    runId,
+    policy,
+    support: "supported",
+    metadataPath: null,
+  });
+
   const restoreState = (ctx: ExtensionContext): void => {
     const branch = ctx.sessionManager.getBranch();
     for (const entry of branch) {
@@ -1929,16 +1943,13 @@ export default function otto(pi: ExtensionAPI) {
     const sessionPolicy = resolveOttoSessionPolicy(freshSessionBetweenSteps);
 
     try {
-      const snapshot = await services.core.start({
-        runId: state.runId ?? undefined,
-        sessionPolicy,
-        maxIterations: state.maxIterations,
-        maxFailures: state.maxFailures,
-      });
+      const session = await services.sessions.recordSession(
+        currentSessionHandle(ctx, state.runId, sessionPolicy),
+      );
       state = applyOttoSessionStatus(state, {
-        sessionPolicy: snapshot.sessionPolicy,
-        sessionSupport: snapshot.sessionSupport,
-        lastSessionRotation: snapshot.lastSessionRotation,
+        sessionPolicy: session.policy,
+        sessionSupport: session.support,
+        lastSessionRotation: "not-attempted",
       });
     } catch (sessionError) {
       state = applyOttoSessionStatus(state, {
@@ -2062,11 +2073,24 @@ export default function otto(pi: ExtensionAPI) {
     if (state.runId) {
       try {
         const session = await services.sessions.continueRunSession(state.runId);
+        const recorded = await services.sessions.recordSession(
+          currentSessionHandle(
+            ctx,
+            state.runId,
+            session?.policy ?? state.sessionPolicy,
+          ),
+        );
         state = applyOttoSessionStatus(state, {
-          sessionPolicy: session.policy,
-          sessionSupport: session.support,
-          lastSessionRotation: "success",
+          sessionPolicy: recorded.policy,
+          sessionSupport: recorded.support,
+          lastSessionRotation: state.lastSessionRotation,
         });
+        if (!session) {
+          services.ui.notify(
+            `Otto resume did not find existing session metadata for ${state.runId}; rebound the run to the current Pi session.`,
+            "warning",
+          );
+        }
       } catch (sessionError) {
         state = applyOttoSessionStatus(state, {
           sessionSupport: "failed",

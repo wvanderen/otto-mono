@@ -141,9 +141,10 @@ export interface ExecResult {
 // so the Otto engine can stay package-owned while adapters translate SDK quirks.
 export interface OttoSessionRuntime {
   createRunSession(options?: OttoSessionOptions): Promise<OttoSessionHandle>;
-  continueRunSession(runId: string): Promise<OttoSessionHandle>;
+  continueRunSession(runId: string): Promise<OttoSessionHandle | null>;
   openSession(sessionIdOrPath: string): Promise<OttoSessionHandle>;
   listSessions(filter?: OttoSessionFilter): Promise<OttoSessionInfo[]>;
+  recordSession(handle: OttoSessionHandle): Promise<OttoSessionHandle>;
   rotateSession(handle: OttoSessionHandle): Promise<OttoSessionHandle>;
 }
 

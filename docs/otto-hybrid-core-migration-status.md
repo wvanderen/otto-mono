@@ -166,6 +166,9 @@ Current `td` issues are directionally accurate, with one important note:
   landed through the session runtime wrapper and session metadata work
 - `td-cf544f` is still relevant, but meaningful pieces of that adapter
   extraction are already in place
+- Otto start/resume now need to treat the live Pi conversation as the
+  source of truth and only use the SDK runtime for run metadata and
+  session discovery, not detached workflow dispatch
 - `td-4e5163`, `td-ef8c0e`, and `td-8c055d` remain substantially future
   work
 

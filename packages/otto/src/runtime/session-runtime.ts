@@ -91,7 +91,7 @@ export class SdkOttoSessionRuntime implements OttoSessionRuntime {
     };
   }
 
-  private recordSession(
+  private persistSessionRecord(
     handle: OttoSessionHandle,
     cwd = this.options.cwd,
   ): void {
@@ -148,39 +148,25 @@ export class SdkOttoSessionRuntime implements OttoSessionRuntime {
       "supported",
       cwd,
     );
-    this.recordSession(handle, cwd);
+    this.persistSessionRecord(handle, cwd);
     return handle;
   }
 
-  async continueRunSession(runId: string): Promise<OttoSessionHandle> {
+  async continueRunSession(runId: string): Promise<OttoSessionHandle | null> {
     const index = this.readIndex();
     const previous = index.sessions
       .filter((session) => session.runId === runId)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
 
-    if (previous) {
-      return this.openSession(previous.sessionPath);
-    }
+    if (!previous) return null;
 
-    const manager = SessionManager.continueRecent(
-      this.options.cwd,
-      this.getSessionDir(),
+    return this.toHandle(
+      previous.sessionId,
+      previous.sessionPath,
+      previous.runId,
+      previous.policy,
+      previous.support,
     );
-    const { session } = await createAgentSession({
-      cwd: this.options.cwd,
-      model: this.options.model,
-      sessionManager: manager,
-    });
-
-    const handle = this.toHandle(
-      session.sessionId,
-      session.sessionFile ?? null,
-      runId,
-      "require-fresh",
-      "supported",
-    );
-    this.recordSession(handle);
-    return handle;
   }
 
   async openSession(sessionIdOrPath: string): Promise<OttoSessionHandle> {
@@ -210,7 +196,7 @@ export class SdkOttoSessionRuntime implements OttoSessionRuntime {
       record?.policy ?? "require-fresh",
       record?.support ?? "supported",
     );
-    this.recordSession(handle);
+    this.persistSessionRecord(handle);
     return handle;
   }
 
@@ -229,7 +215,7 @@ export class SdkOttoSessionRuntime implements OttoSessionRuntime {
       return {
         sessionId: session.id,
         sessionPath: session.path,
-        runId: record?.runId ?? filter.runId ?? null,
+        runId: record?.runId ?? null,
         createdAt: session.created,
         updatedAt: session.modified,
         summary: session.firstMessage || null,
@@ -239,7 +225,23 @@ export class SdkOttoSessionRuntime implements OttoSessionRuntime {
       };
     });
 
-    return filter.limit ? mapped.slice(0, filter.limit) : mapped;
+    const filtered = filter.runId
+      ? mapped.filter((session) => session.runId === filter.runId)
+      : mapped;
+
+    return filter.limit ? filtered.slice(0, filter.limit) : filtered;
+  }
+
+  async recordSession(handle: OttoSessionHandle): Promise<OttoSessionHandle> {
+    const recorded = this.toHandle(
+      handle.sessionId,
+      handle.sessionPath,
+      handle.runId,
+      handle.policy,
+      handle.support,
+    );
+    this.persistSessionRecord(recorded);
+    return recorded;
   }
 
   async rotateSession(handle: OttoSessionHandle): Promise<OttoSessionHandle> {

@@ -190,9 +190,10 @@ Suggested shape:
 ```ts
 interface OttoSessionRuntime {
   createRunSession(options?: OttoSessionOptions): Promise<OttoSessionHandle>;
-  continueRunSession(runId: string): Promise<OttoSessionHandle>;
+  continueRunSession(runId: string): Promise<OttoSessionHandle | null>;
   openSession(sessionIdOrPath: string): Promise<OttoSessionHandle>;
   listSessions(filter?: OttoSessionFilter): Promise<OttoSessionInfo[]>;
+  recordSession(handle: OttoSessionHandle): Promise<OttoSessionHandle>;
   rotateSession(handle: OttoSessionHandle): Promise<OttoSessionHandle>;
 }
 ```
@@ -258,6 +259,7 @@ relying on Pi extension capability checks alone.
 For each Otto run:
 
 - create or resume a named Otto session set
+- bind run metadata to the live Pi session before queueing workflow prompts
 - associate checkpoints with SDK session IDs and paths
 - allow `continueRecent` to recover the latest Otto-managed session for a
   run or workspace
