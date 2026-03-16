@@ -2073,6 +2073,20 @@ export default function otto(pi: ExtensionAPI) {
     if (state.runId) {
       try {
         const session = await services.sessions.continueRunSession(state.runId);
+        if (
+          session?.sessionPath &&
+          session.sessionPath !== ctx.sessionManager.getSessionFile()
+        ) {
+          await ctx.waitForIdle();
+          const switched = await ctx.switchSession(session.sessionPath);
+          if (switched.cancelled) {
+            services.ui.notify(
+              `Otto resume could not switch back to ${session.sessionPath}; leaving the run paused.`,
+              "warning",
+            );
+            return;
+          }
+        }
         const recorded = await services.sessions.recordSession(
           currentSessionHandle(
             ctx,
