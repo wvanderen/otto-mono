@@ -9,7 +9,7 @@ import {
   parseWorkflowResult,
   resolveWorkflowResult,
   shortText,
-} from "../examples/pi-extension/otto-result.mjs";
+} from "../packages/otto/src/otto-result.mjs";
 
 const validText = [
   "Completed td-123abc - Current td UI should include title and queued review.",

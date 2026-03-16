@@ -185,28 +185,15 @@ Otto stores session metadata in `.pi/otto/runtime/sessions.json` and uses that i
 
 ## Packaging Model
 
-Current source of truth:
+The package is the runtime source of truth:
 
 - `packages/otto/src/otto.ts`
 - `packages/otto/src/otto-result.mjs`
 - `packages/otto/skills/otto/SKILL.md`
 
-Before `npm pack` or `npm publish`, the package sync step copies that source into:
-
-- `examples/pi-extension/otto.ts`
-- `examples/pi-extension/otto-result.mjs`
-- `examples/pi-extension/skills/otto/SKILL.md`
-- `.pi/extensions/otto.ts`
-- `.pi/extensions/otto-result.mjs`
-
-That keeps the package as the implementation source of truth while still
-updating the local prototype and project-local Pi extension copies.
-
-This packaging model is temporary. Package source is already the
-authoritative implementation, but the sync layer still exists as a
-transitional bridge while the remaining prototype duplication is retired.
-The approved direction is to move Otto toward a package-first hybrid core
-so that sync step can eventually disappear entirely.
+`pi install ./packages/otto` exercises the same package-owned code that
+ships to npm. The example extension remains a local fixture for operator
+docs and experimentation, not a mirrored runtime source.
 
 ## Roadmap
 

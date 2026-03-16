@@ -155,8 +155,8 @@ Refs: {td_issue_id}
 Workspace layout:
 
 - `packages/bmad-module-td`: publishable BMAD td-integration module
-- `packages/otto`: publishable Pi package for Otto
-- `examples/pi-extension`: local Pi extension fixture and Otto source-of-truth workspace
+- `packages/otto`: publishable Pi package and Otto runtime source of truth
+- `examples/pi-extension`: local Pi extension fixture for docs and experimentation
 
 Operational details live in `docs/monorepo-ops.md`.
 

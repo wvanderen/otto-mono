@@ -18,8 +18,8 @@ Otto adds a lightweight automation loop to Pi for BMAD + td workflows:
 - `examples/pi-extension/otto.ts`
 - `examples/pi-extension/otto-result.mjs`
 
-This example now mirrors the package-owned source and should gradually
-shrink into a thin adapter example as the remaining migration work lands.
+These files are a local prototype fixture. The package implementation in
+`packages/otto/` is authoritative for runtime logic and publishing.
 
 ## Install Locally in Pi
 
@@ -125,8 +125,8 @@ Example:
 
 The packaged Otto extension ships an `otto` skill resource for Pi agents.
 
-- Source of truth: `examples/pi-extension/skills/otto/SKILL.md`
-- Packaged path: `packages/otto/skills/otto/SKILL.md`
+- Source of truth: `packages/otto/skills/otto/SKILL.md`
+- Local fixture copy: `examples/pi-extension/skills/otto/SKILL.md`
 
 ## Notes
 
