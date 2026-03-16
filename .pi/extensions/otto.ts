@@ -1241,19 +1241,6 @@ export default function otto(pi: ExtensionAPI) {
     state.lastProgressAt = Date.now();
   };
 
-  const currentSessionHandle = (
-    ctx: ExtensionContext,
-    runId: string | null,
-    policy: RunState["sessionPolicy"],
-  ): OttoSessionHandle => ({
-    sessionId: ctx.sessionManager.getSessionId(),
-    sessionPath: ctx.sessionManager.getSessionFile() ?? null,
-    runId,
-    policy,
-    support: "supported",
-    metadataPath: null,
-  });
-
   const restoreState = (ctx: ExtensionContext): void => {
     const branch = ctx.sessionManager.getBranch();
     for (const entry of branch) {
@@ -1943,9 +1930,10 @@ export default function otto(pi: ExtensionAPI) {
     const sessionPolicy = resolveOttoSessionPolicy(freshSessionBetweenSteps);
 
     try {
-      const session = await services.sessions.recordSession(
-        currentSessionHandle(ctx, state.runId, sessionPolicy),
-      );
+      const session = await services.sessions.getCurrentSessionHandle({
+        runId: state.runId ?? undefined,
+        policy: sessionPolicy,
+      });
       state = applyOttoSessionStatus(state, {
         sessionPolicy: session.policy,
         sessionSupport: session.support,
@@ -2087,13 +2075,10 @@ export default function otto(pi: ExtensionAPI) {
             return;
           }
         }
-        const recorded = await services.sessions.recordSession(
-          currentSessionHandle(
-            ctx,
-            state.runId,
-            session?.policy ?? state.sessionPolicy,
-          ),
-        );
+        const recorded = await services.sessions.getCurrentSessionHandle({
+          runId: state.runId ?? undefined,
+          policy: session?.policy ?? state.sessionPolicy,
+        });
         state = applyOttoSessionStatus(state, {
           sessionPolicy: recorded.policy,
           sessionSupport: recorded.support,

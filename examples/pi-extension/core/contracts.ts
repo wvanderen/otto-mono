@@ -146,6 +146,9 @@ export interface OttoSessionRuntime {
   listSessions(filter?: OttoSessionFilter): Promise<OttoSessionInfo[]>;
   recordSession(handle: OttoSessionHandle): Promise<OttoSessionHandle>;
   rotateSession(handle: OttoSessionHandle): Promise<OttoSessionHandle>;
+  getCurrentSessionHandle(
+    options?: OttoSessionOptions,
+  ): Promise<OttoSessionHandle>;
 }
 
 // Workflow dispatch belongs to the boundary so Otto can drive Pi today and a

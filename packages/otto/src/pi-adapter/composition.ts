@@ -23,7 +23,10 @@ export const createOttoPiServices = (
   ctx: ExtensionCommandContext,
 ): OttoPiServices => {
   const commands = new PiCommandExecutor(pi);
-  const sessions = new SdkOttoSessionRuntime({ cwd: process.cwd() });
+  const sessions = new SdkOttoSessionRuntime({
+    cwd: process.cwd(),
+    sessionManager: ctx.sessionManager,
+  });
   const sessionControl = new PiSessionController(ctx);
   const ui = new PiOperatorUi(ctx);
   const core = new OttoCoreService({ commands, sessions, ui });

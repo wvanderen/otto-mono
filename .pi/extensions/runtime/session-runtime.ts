@@ -20,6 +20,7 @@ export interface SdkOttoSessionRuntimeOptions {
   sessionDir?: string;
   metadataDir?: string;
   model?: Model<any>;
+  sessionManager?: SessionManager;
 }
 
 interface OttoSessionRecord {
@@ -39,6 +40,19 @@ interface OttoSessionIndex {
 
 export class SdkOttoSessionRuntime implements OttoSessionRuntime {
   constructor(private readonly options: SdkOttoSessionRuntimeOptions) {}
+
+  private getRuntimeSessionManager(
+    cwd = this.options.cwd,
+  ): SessionManager | undefined {
+    if (!this.options.sessionManager) return undefined;
+
+    const currentPath = this.options.sessionManager.getSessionFile?.() ?? null;
+    if (!currentPath) return this.options.sessionManager;
+
+    return resolve(currentPath).startsWith(resolve(this.getSessionDir(cwd)))
+      ? this.options.sessionManager
+      : undefined;
+  }
 
   private getSessionDir(cwd = this.options.cwd): string {
     return this.options.sessionDir ?? resolve(cwd, ".pi/otto/sessions");
@@ -242,6 +256,36 @@ export class SdkOttoSessionRuntime implements OttoSessionRuntime {
     );
     this.persistSessionRecord(recorded);
     return recorded;
+  }
+
+  async getCurrentSessionHandle(
+    options: OttoSessionOptions = {},
+  ): Promise<OttoSessionHandle> {
+    const cwd = options.cwd ?? this.options.cwd;
+    const policy = options.policy ?? "require-fresh";
+    const manager = this.getRuntimeSessionManager(cwd);
+
+    if (!manager) {
+      return this.recordSession({
+        sessionId: "unknown",
+        sessionPath: null,
+        runId: options.runId ?? null,
+        policy,
+        support: "unavailable",
+        metadataPath: this.getIndexPath(cwd),
+      });
+    }
+
+    const handle = this.toHandle(
+      manager.getSessionId(),
+      manager.getSessionFile() ?? null,
+      options.runId ?? null,
+      policy,
+      "supported",
+      cwd,
+    );
+    this.persistSessionRecord(handle, cwd);
+    return handle;
   }
 
   async rotateSession(handle: OttoSessionHandle): Promise<OttoSessionHandle> {
