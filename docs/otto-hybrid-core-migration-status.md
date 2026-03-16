@@ -1,6 +1,6 @@
 # Otto Hybrid-Core Migration Status
 
-Last updated: 2026-03-15
+Last updated: 2026-03-16
 
 This document records what has landed from the hybrid-core migration,
 what remains, and how the current `td` backlog maps to reality.
@@ -158,7 +158,7 @@ not been retired yet:
 
 ## td Backlog Accuracy
 
-Current `td` issues are directionally accurate, with one important note:
+Current `td` issues are directionally accurate, with a few important notes:
 
 - `td-34c380` is carrying most of the extraction work that has landed so
   far and remains the active implementation issue for this session
@@ -166,6 +166,9 @@ Current `td` issues are directionally accurate, with one important note:
   landed through the session runtime wrapper and session metadata work
 - `td-cf544f` is still relevant, but meaningful pieces of that adapter
   extraction are already in place
+- `td-8c055d` is now partially satisfied by this document plus
+  `docs/otto-hybrid-core-blueprint.md`, and should stay open only while the
+  top-level package docs still need to reflect the same migration status
 - Otto start/resume now need to treat the live Pi conversation as the
   source of truth and only use the SDK runtime for run metadata and
   session discovery, not detached workflow dispatch
@@ -193,6 +196,20 @@ more incremental way than the original clean phase boundaries implied.
 3. add an explicit runtime diagnostic surface such as `/otto-check`
 4. decide when `td-34c380` is considered complete and whether to move the
    next implementation session onto `td-1daf8b` or `td-cf544f`
+
+## Documentation Follow-Through
+
+The architecture docs are now in place, but user-facing package docs still
+need to stay synchronized with them.
+
+- `packages/otto/README.md` should remain the primary operator-facing entry
+  point and must describe the current hybrid-core status without implying
+  the migration is finished
+- `examples/pi-extension/README.md` should continue framing the local
+  extension copy as a transitional mirror of the package-owned source
+- future Otto docs should link both the blueprint and this migration-status
+  document when describing packaging, migration phases, or runtime
+  ownership
 
 ## Handoff Notes
 

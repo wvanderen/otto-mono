@@ -55,15 +55,18 @@ Otto is built on top of:
   handoffs, and review flow
 - Pi as the runtime that hosts the Otto package and skill resources
 
-Otto full mode also expects a Pi build that exposes native
-`newSession()` support to extension command handlers. When that API is
-missing, Otto falls back to same-session compaction and cannot preserve
-its strongest review-separation guarantees.
+Otto currently still benefits from Pi builds that expose native
+`newSession()` support to extension command handlers. Until the remaining
+hybrid-core migration work finishes, missing support can still force some
+flows to fall back to same-session compaction and weaken review-separation
+guarantees.
 
-Otto is also being refactored toward a hybrid-core architecture where the
-run engine owns session lifecycle through the Pi SDK and Pi remains the
-main operator surface. The current extension-first implementation is
-transitional; see `docs/otto-hybrid-core-blueprint.md`.
+Otto is being refactored toward a hybrid-core architecture where the run
+engine owns session lifecycle through package-owned core and runtime
+layers, while Pi remains the main operator surface. That migration is in
+progress rather than complete; see `docs/otto-hybrid-core-blueprint.md`
+for the target design and `docs/otto-hybrid-core-migration-status.md` for
+the current state.
 
 ## Installation
 
@@ -132,6 +135,7 @@ Architecture direction:
 - near term: Pi package with extracted core/runtime boundaries
 - target: SDK-driven Otto engine with a thin Pi adapter
 - planning reference: `docs/otto-hybrid-core-blueprint.md`
+- current migration status: `docs/otto-hybrid-core-migration-status.md`
 
 ## Configuration
 
@@ -198,9 +202,11 @@ Before `npm pack` or `npm publish`, the package sync step copies that source int
 That keeps the package as the implementation source of truth while still
 updating the local prototype and project-local Pi extension copies.
 
-This packaging model is temporary. The approved direction is to move Otto
-toward a package-first hybrid core so the remaining prototype sync layer
-can eventually disappear entirely.
+This packaging model is temporary. Package source is already the
+authoritative implementation, but the sync layer still exists as a
+transitional bridge while the remaining prototype duplication is retired.
+The approved direction is to move Otto toward a package-first hybrid core
+so that sync step can eventually disappear entirely.
 
 ## Roadmap
 
@@ -240,6 +246,7 @@ Working docs:
 - `docs/otto-session-reset-docs-plan.md`
 - `docs/otto-session-reset-install-onboarding-checks.md`
 - `docs/otto-hybrid-core-blueprint.md`
+- `docs/otto-hybrid-core-migration-status.md`
 
 If you want the fuller product direction behind this roadmap, start
 with `docs/otto-manifesto.md`.

@@ -2,7 +2,9 @@
 
 This local prototype remains useful for development, but Otto's approved
 direction is now a package-first hybrid core with a thin Pi adapter. See
-`docs/otto-hybrid-core-blueprint.md` for the extraction plan.
+`docs/otto-hybrid-core-blueprint.md` for the target design and
+`docs/otto-hybrid-core-migration-status.md` for the current extraction
+status.
 
 Otto adds a lightweight automation loop to Pi for BMAD + td workflows:
 
@@ -17,7 +19,7 @@ Otto adds a lightweight automation loop to Pi for BMAD + td workflows:
 - `examples/pi-extension/otto-result.mjs`
 
 This example now mirrors the package-owned source and should gradually
-shrink into a thin adapter example as the package core lands.
+shrink into a thin adapter example as the remaining migration work lands.
 
 ## Install Locally in Pi
 
