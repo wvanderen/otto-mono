@@ -166,9 +166,10 @@ Current `td` issues are directionally accurate, with a few important notes:
   landed through the session runtime wrapper and session metadata work
 - `td-cf544f` is still relevant, but meaningful pieces of that adapter
   extraction are already in place
-- `td-8c055d` is now partially satisfied by this document plus
-  `docs/otto-hybrid-core-blueprint.md`, and should stay open only while the
-  top-level package docs still need to reflect the same migration status
+- `td-8c055d` is now mostly satisfied by this document,
+  `docs/otto-hybrid-core-blueprint.md`, and the synchronized top-level Otto
+  READMEs; keep it open only while follow-through docs still need to stay in
+  sync with migration reality
 - Otto start/resume now need to treat the live Pi conversation as the
   source of truth and only use the SDK runtime for run metadata and
   session discovery, not detached workflow dispatch
@@ -191,7 +192,7 @@ more incremental way than the original clean phase boundaries implied.
 
 1. keep extracting the remaining `agent_end` decision tree into core
    helpers
-2. move `/otto-continue` and any remaining direct session affordances
+2. move `/otto-resume` and any remaining direct session affordances
    behind the runtime/adapter boundary
 3. add an explicit runtime diagnostic surface such as `/otto-check`
 4. decide when `td-34c380` is considered complete and whether to move the
