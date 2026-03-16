@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 import type { Model } from "@mariozechner/pi-coding-agent";
 import {
@@ -41,6 +41,17 @@ interface OttoSessionIndex {
 export class SdkOttoSessionRuntime implements OttoSessionRuntime {
   constructor(private readonly options: SdkOttoSessionRuntimeOptions) {}
 
+  private isWithinSessionDir(path: string, cwd = this.options.cwd): boolean {
+    const sessionDir = resolve(this.getSessionDir(cwd));
+    const candidate = resolve(path);
+    const relativePath = relative(sessionDir, candidate);
+
+    return (
+      relativePath === "" ||
+      (!relativePath.startsWith("..") && !relativePath.startsWith("../"))
+    );
+  }
+
   private getRuntimeSessionManager(
     cwd = this.options.cwd,
   ): SessionManager | undefined {
@@ -49,7 +60,7 @@ export class SdkOttoSessionRuntime implements OttoSessionRuntime {
     const currentPath = this.options.sessionManager.getSessionFile?.() ?? null;
     if (!currentPath) return this.options.sessionManager;
 
-    return resolve(currentPath).startsWith(resolve(this.getSessionDir(cwd)))
+    return this.isWithinSessionDir(currentPath, cwd)
       ? this.options.sessionManager
       : undefined;
   }

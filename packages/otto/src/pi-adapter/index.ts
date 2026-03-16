@@ -24,5 +24,6 @@ export class NullOttoOperatorUi implements OttoOperatorUi {
 
 export * from "./commands";
 export * from "./composition";
+export * from "./runtime";
 export * from "./session-control";
 export * from "./ui";

@@ -18,6 +18,10 @@ export interface OttoPiServices {
   ui: PiOperatorUi;
 }
 
+export type OttoPiServiceAccessor = (
+  ctx: ExtensionContext | ExtensionCommandContext,
+) => OttoPiServices;
+
 export const createOttoPiServices = (
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
@@ -39,7 +43,9 @@ export const createOttoPiCore = (
   ctx: ExtensionCommandContext,
 ): OttoCoreService => createOttoPiServices(pi, ctx).core;
 
-export const createCachedOttoPiServices = (pi: ExtensionAPI) => {
+export const createCachedOttoPiServices = (
+  pi: ExtensionAPI,
+): OttoPiServiceAccessor => {
   const cache = new WeakMap<object, OttoPiServices>();
 
   return (ctx: ExtensionContext | ExtensionCommandContext): OttoPiServices => {

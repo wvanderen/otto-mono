@@ -15,39 +15,26 @@ import {
   applyInitCompletion,
   applyAgentResultUpdate,
   applyQueuedWorkflow,
-  applyOttoSessionStatus,
   applyStopState,
   advanceOttoIteration,
   buildFailureBudgetReason,
   buildOttoTdDriftReason,
   buildStopNotification,
-  buildOttoStatusDetail,
-  buildOttoStatusSnapshot,
   completeAwaitingWorkflowStart,
-  compactedContinueReason,
-  compactionFallbackReason,
   createOttoCoreState,
   createWorkflowToken,
-  freshSessionContinueReason,
-  freshSessionFailedWarning,
-  freshSessionUnsupportedWarning,
   initializeOttoRunState,
   markAwaitingWorkflowStarted,
   markOttoTdDrift,
   mergeOttoEvidenceSignals,
-  OTTO_COMPACTION_INSTRUCTIONS,
   pauseOttoRunState,
   parseOttoRemainingWork,
-  prepareCompaction,
-  prepareFreshSessionHop,
   resetOttoQueueProgress,
   resolveOttoQueueDrainDecision,
   resolveOttoQueueStateFromWork,
   resolveOttoSessionPolicy,
-  resolveOttoStartReason,
   resolveOttoTdDriftAction,
   resumeNextStepReason,
-  resumeOttoRunState,
   updateOttoQueueState,
   registerOttoToolError,
   shouldIgnoreAgentEnd,
@@ -68,6 +55,7 @@ import {
   type OttoWorkflowMode,
 } from "./core";
 import {
+  OttoPiRuntimeController,
   PiCommandExecutor,
   PiOperatorUi,
   createCachedOttoPiServices,
@@ -1213,6 +1201,24 @@ export default function otto(pi: ExtensionAPI) {
   let turnHadToolError = false;
   let onboardingHintShown = false;
   const getServices = createCachedOttoPiServices(pi);
+  const runtimeController = new OttoPiRuntimeController(getServices, {
+    getState: () => state,
+    setState: (nextState) => {
+      state = nextState;
+    },
+    persistState: (reason) => persistState(reason),
+    updateUi: (ctx) => updateUi(ctx),
+    stopRun: (ctx, phase, reason, stopCode) =>
+      stopRun(ctx, phase, reason, stopCode),
+    setContinuation: (continuity, reason) =>
+      setContinuation(continuity, reason),
+    queueWorkflowCommand: (ctx, command, reason) =>
+      queueWorkflowCommand(ctx, command, reason),
+    loadPreferenceInfo: () => {
+      const loaded = loadAutopilotPreferences();
+      return { source: loaded.source, error: loaded.error };
+    },
+  });
 
   const persistState = (reason: string): void => {
     pi.appendEntry(STATE_ENTRY_TYPE, {
@@ -1332,81 +1338,8 @@ export default function otto(pi: ExtensionAPI) {
     updateUi(ctx);
   };
 
-  const continueWithFreshSession = async (
-    ctx: ExtensionContext,
-  ): Promise<void> => {
-    const services = getServices(ctx);
-    setContinuation(
-      "fresh-session",
-      "Fresh-session mode is enabled; rotate the session before the next workflow step.",
-    );
-    state = prepareFreshSessionHop(state, state.lastContinuationReason ?? "");
-    persistState("direct-session-hop-attempt");
-    updateUi(ctx);
-
-    const rotation = await services.sessionControl.rotate();
-
-    if (rotation.status === "unsupported") {
-      services.ui.notify(freshSessionUnsupportedWarning(), "warning");
-      compactAndQueueNextStep(ctx);
-      return;
-    }
-
-    if (rotation.status === "cancelled") {
-      stopRun(
-        ctx,
-        "error",
-        "Session rotation cancelled.",
-        "session-rotation-cancelled",
-      );
-      return;
-    }
-
-    if (rotation.status === "success") {
-      persistState("session-rotated-direct");
-      updateUi(ctx);
-      queueWorkflowCommand(
-        ctx,
-        NEXT_STEP_COMMAND,
-        freshSessionContinueReason(),
-      );
-      return;
-    }
-
-    services.ui.notify(freshSessionFailedWarning(), "warning");
-    compactAndQueueNextStep(ctx);
-  };
-
-  const compactAndQueueNextStep = (ctx: ExtensionContext): void => {
-    state = prepareCompaction(state);
-    persistState("compact-before-next-step");
-    updateUi(ctx);
-
-    getServices(ctx).sessionControl.compact({
-      customInstructions: OTTO_COMPACTION_INSTRUCTIONS,
-      onComplete: () => {
-        if (!state.active || state.phase !== "running") return;
-        setContinuation("same-session-compacted", compactedContinueReason());
-        queueWorkflowCommand(ctx, NEXT_STEP_COMMAND, compactedContinueReason());
-      },
-      onError: () => {
-        if (!state.active || state.phase !== "running") return;
-        setContinuation("compaction-fallback", compactionFallbackReason());
-        queueWorkflowCommand(
-          ctx,
-          NEXT_STEP_COMMAND,
-          compactionFallbackReason(),
-        );
-      },
-    });
-  };
-
   const queueNextStepIteration = (ctx: ExtensionContext): void => {
-    if (state.freshSessionBetweenSteps) {
-      void continueWithFreshSession(ctx);
-      return;
-    }
-    compactAndQueueNextStep(ctx);
+    runtimeController.queueNextStepIteration(ctx, NEXT_STEP_COMMAND);
   };
 
   const hasRemainingWork = async (): Promise<{
@@ -1535,7 +1468,7 @@ export default function otto(pi: ExtensionAPI) {
           "warning",
         );
       }
-      compactAndQueueNextStep(ctx);
+      runtimeController.compactAndQueueNextStep(ctx, NEXT_STEP_COMMAND);
       return;
     }
 
@@ -1910,15 +1843,13 @@ export default function otto(pi: ExtensionAPI) {
     args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
-    const services = getServices(ctx);
-
     if (state.active && state.phase !== "paused") {
-      services.ui.notify("Otto is already running.", "warning");
+      getServices(ctx).ui.notify("Otto is already running.", "warning");
       return;
     }
 
     const parsed = parseStartArgs(args);
-    const { preferences, source, error } = loadAutopilotPreferences();
+    const { preferences } = loadAutopilotPreferences();
     const defaults = preferences.defaults;
     const now = Date.now();
     const freshSessionBetweenSteps =
@@ -1942,51 +1873,12 @@ export default function otto(pi: ExtensionAPI) {
     });
 
     const sessionPolicy = resolveOttoSessionPolicy(freshSessionBetweenSteps);
-
-    try {
-      const session = await services.sessions.getCurrentSessionHandle({
-        runId: state.runId ?? undefined,
-        policy: sessionPolicy,
-      });
-      state = applyOttoSessionStatus(state, {
-        sessionPolicy: session.policy,
-        sessionSupport: session.support,
-        lastSessionRotation: "not-attempted",
-      });
-      if (session.support === "unavailable") {
-        services.ui.notify(
-          "Otto attached to the current Pi session, but that session is outside Otto-managed session storage.",
-          "warning",
-        );
-      }
-    } catch (sessionError) {
-      state = applyOttoSessionStatus(state, {
-        sessionPolicy,
-        sessionSupport: "failed",
-        lastSessionRotation: "failed",
-        lastError:
-          sessionError instanceof Error
-            ? sessionError.message
-            : String(sessionError),
-      });
-      services.ui.notify(
-        `Otto session runtime setup failed: ${state.lastError}`,
-        "warning",
-      );
-    }
-
-    persistState("start");
-    updateUi(ctx);
-    queueWorkflowCommand(ctx, initialCommand, resolveOttoStartReason(skipInit));
-    if (source && ctx.hasUI) {
-      services.ui.notify(
-        error
-          ? `Otto preferences fallback: ${source} could not be loaded (${error})`
-          : `Loaded Otto preferences from ${source}`,
-        error ? "warning" : "info",
-      );
-    }
-    services.ui.notify("Otto started.", "success");
+    await runtimeController.start({
+      ctx,
+      sessionPolicy,
+      initialCommand,
+      skipInit,
+    });
   };
 
   registerOttoCommand(
@@ -2016,28 +1908,19 @@ export default function otto(pi: ExtensionAPI) {
     _args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
-    const services = getServices(ctx);
-    const loadedPreferences = loadAutopilotPreferences();
-    services.ui.notify(
-      buildOttoStatusDetail(state, {
-        preferencesSource: loadedPreferences.source,
-        preferenceError: loadedPreferences.error,
-        currentIssueLabel: currentIssueLabel(
-          state.lastIssueId,
-          state.lastIssueTitle,
-        ),
-        reasonLabel: widgetReasonLabel(state.lastDecisionReason),
-        continuityLabel: continuityLabel(
-          state.lastContinuation,
-          state.lastContinuationReason,
-        ),
-        alert: stateAlert(state),
-        sessionAlert: sessionSupportAlert(state),
-      }),
-      "info",
-    );
-    services.ui.renderStatus(buildOttoStatusSnapshot(state));
-    updateUi(ctx);
+    runtimeController.renderStatus(ctx, state, {
+      currentIssueLabel: currentIssueLabel(
+        state.lastIssueId,
+        state.lastIssueTitle,
+      ),
+      reasonLabel: widgetReasonLabel(state.lastDecisionReason),
+      continuityLabel: continuityLabel(
+        state.lastContinuation,
+        state.lastContinuationReason,
+      ),
+      alert: stateAlert(state),
+      sessionAlert: sessionSupportAlert(state),
+    });
   };
 
   registerOttoCommand(
@@ -2073,72 +1956,15 @@ export default function otto(pi: ExtensionAPI) {
     _args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
-    const services = getServices(ctx);
     if (!state.active || state.phase !== "paused") {
-      services.ui.notify("Otto is not paused.", "warning");
+      getServices(ctx).ui.notify("Otto is not paused.", "warning");
       return;
     }
-
-    if (state.runId) {
-      try {
-        const session = await services.sessions.continueRunSession(state.runId);
-        if (
-          session?.sessionPath &&
-          session.sessionPath !== ctx.sessionManager.getSessionFile()
-        ) {
-          await ctx.waitForIdle();
-          const switched = await ctx.switchSession(session.sessionPath);
-          if (switched.cancelled) {
-            services.ui.notify(
-              `Otto resume could not switch back to ${session.sessionPath}; leaving the run paused.`,
-              "warning",
-            );
-            return;
-          }
-        }
-        const recorded = await services.sessions.getCurrentSessionHandle({
-          runId: state.runId ?? undefined,
-          policy: session?.policy ?? state.sessionPolicy,
-        });
-        state = applyOttoSessionStatus(state, {
-          sessionPolicy: recorded.policy,
-          sessionSupport: recorded.support,
-          lastSessionRotation: state.lastSessionRotation,
-        });
-        if (recorded.support === "unavailable") {
-          services.ui.notify(
-            "Otto resumed on the current Pi session because no Otto-managed session file was available for this run.",
-            "warning",
-          );
-        }
-        if (!session) {
-          services.ui.notify(
-            `Otto resume did not find existing session metadata for ${state.runId}; rebound the run to the current Pi session.`,
-            "warning",
-          );
-        }
-      } catch (sessionError) {
-        state = applyOttoSessionStatus(state, {
-          sessionSupport: "failed",
-          lastSessionRotation: "failed",
-          lastError:
-            sessionError instanceof Error
-              ? sessionError.message
-              : String(sessionError),
-        });
-        services.ui.notify(
-          `Otto resume session lookup failed: ${state.lastError}`,
-          "warning",
-        );
-      }
-    }
-
-    state = resumeOttoRunState(state, NEXT_STEP_COMMAND);
-    persistState("resume");
-    updateUi(ctx);
-
-    queueWorkflowCommand(ctx, NEXT_STEP_COMMAND, resumeNextStepReason());
-    services.ui.notify("Otto resumed.", "success");
+    await runtimeController.resume(
+      ctx,
+      NEXT_STEP_COMMAND,
+      resumeNextStepReason(),
+    );
   };
 
   registerOttoCommand(
