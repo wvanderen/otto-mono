@@ -3,8 +3,19 @@ import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import type {
   OttoNotificationLevel,
   OttoOperatorUi,
+  OttoSessionSupport,
   OttoStatusSnapshot,
 } from "../core";
+
+const sessionSupportAlert = (support: OttoSessionSupport): string | null => {
+  if (support === "unavailable") {
+    return "Current Pi session is outside Otto-managed session storage.";
+  }
+  if (support === "failed") {
+    return "Otto could not inspect or bind the current session runtime.";
+  }
+  return null;
+};
 
 export class PiOperatorUi implements OttoOperatorUi {
   constructor(private readonly ctx: ExtensionCommandContext) {}
@@ -37,6 +48,7 @@ export class PiOperatorUi implements OttoOperatorUi {
 
   renderStatus(snapshot: OttoStatusSnapshot): void {
     if (!this.ctx.hasUI) return;
+    const sessionAlert = sessionSupportAlert(snapshot.sessionSupport);
     this.ctx.ui.notify(
       [
         `Run: ${snapshot.runId ?? "none"}`,
@@ -48,6 +60,7 @@ export class PiOperatorUi implements OttoOperatorUi {
         `Queue: ${snapshot.queueState}`,
         `Iteration: ${snapshot.iteration}`,
         `Failures: ${snapshot.failures}`,
+        ...(sessionAlert ? [`Session alert: ${sessionAlert}`] : []),
       ].join("\n"),
       "info",
     );

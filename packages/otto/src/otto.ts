@@ -415,6 +415,20 @@ const stateAlert = (runState: RunState): string | null => {
   return null;
 };
 
+const sessionSupportAlert = (runState: RunState): string | null => {
+  if (runState.sessionSupport === "unavailable") {
+    return "current Pi session is outside Otto-managed session storage";
+  }
+
+  if (runState.sessionSupport === "failed") {
+    return runState.lastError
+      ? shortText(runState.lastError, 96)
+      : "session runtime inspection failed";
+  }
+
+  return null;
+};
+
 const parseTdIssueTitle = (stdout: string): string | null => {
   try {
     const parsed = JSON.parse(stdout) as { title?: unknown };
@@ -1939,6 +1953,12 @@ export default function otto(pi: ExtensionAPI) {
         sessionSupport: session.support,
         lastSessionRotation: "not-attempted",
       });
+      if (session.support === "unavailable") {
+        services.ui.notify(
+          "Otto attached to the current Pi session, but that session is outside Otto-managed session storage.",
+          "warning",
+        );
+      }
     } catch (sessionError) {
       state = applyOttoSessionStatus(state, {
         sessionPolicy,
@@ -2012,6 +2032,7 @@ export default function otto(pi: ExtensionAPI) {
           state.lastContinuationReason,
         ),
         alert: stateAlert(state),
+        sessionAlert: sessionSupportAlert(state),
       }),
       "info",
     );
@@ -2084,6 +2105,12 @@ export default function otto(pi: ExtensionAPI) {
           sessionSupport: recorded.support,
           lastSessionRotation: state.lastSessionRotation,
         });
+        if (recorded.support === "unavailable") {
+          services.ui.notify(
+            "Otto resumed on the current Pi session because no Otto-managed session file was available for this run.",
+            "warning",
+          );
+        }
         if (!session) {
           services.ui.notify(
             `Otto resume did not find existing session metadata for ${state.runId}; rebound the run to the current Pi session.`,

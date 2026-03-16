@@ -7,6 +7,7 @@ export interface OttoStatusReportOptions {
   reasonLabel: string;
   continuityLabel: string;
   alert: string | null;
+  sessionAlert: string | null;
 }
 
 export const buildOttoStatusDetail = (
@@ -46,6 +47,8 @@ export const buildOttoStatusDetail = (
 
   const detailLines = [status];
   if (options.alert) detailLines.push(`Alert: ${options.alert}`);
+  if (options.sessionAlert)
+    detailLines.push(`Session alert: ${options.sessionAlert}`);
   if (options.preferenceError) {
     detailLines.push(`Preference warning: ${options.preferenceError}`);
   }
