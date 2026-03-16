@@ -491,6 +491,21 @@ const formatSessionListLine = (
   return parts.join(" | ");
 };
 
+const resolveManagedSession = (
+  sessions: OttoSessionInfo[],
+  sessionIdOrPath: string,
+): OttoSessionInfo | null => {
+  const trimmed = sessionIdOrPath.trim();
+  if (!trimmed) return null;
+
+  return (
+    sessions.find(
+      (session) =>
+        session.sessionId === trimmed || session.sessionPath === trimmed,
+    ) ?? null
+  );
+};
+
 const buildRuntimeInspection = (
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
@@ -2083,18 +2098,32 @@ export default function otto(pi: ExtensionAPI) {
 
     const requestedSession = args.trim();
     if (requestedSession) {
+      const services = getServices(ctx);
+      const managedSession = resolveManagedSession(
+        await services.sessions.listSessions({ limit: 200 }),
+        requestedSession,
+      );
+
+      if (!managedSession) {
+        services.ui.notify(
+          `Otto resume could not find a tracked session for ${requestedSession}. Use /otto-sessions to inspect available Otto-managed sessions.`,
+          "warning",
+        );
+        return;
+      }
+
       try {
         await ctx.waitForIdle();
-        const switched = await ctx.switchSession(requestedSession);
+        const switched = await ctx.switchSession(managedSession.sessionPath);
         if (switched.cancelled) {
-          getServices(ctx).ui.notify(
-            `Otto resume could not switch to ${requestedSession}.`,
+          services.ui.notify(
+            `Otto resume could not switch to ${managedSession.sessionPath}.`,
             "warning",
           );
           return;
         }
       } catch (error) {
-        getServices(ctx).ui.notify(
+        services.ui.notify(
           `Otto resume session switch failed: ${error instanceof Error ? error.message : String(error)}`,
           "warning",
         );
