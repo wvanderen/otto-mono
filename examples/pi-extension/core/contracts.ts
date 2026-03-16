@@ -131,6 +131,17 @@ export interface OttoStatusSnapshot {
   failures: number;
 }
 
+export interface OttoRuntimeInspection {
+  cwd: string;
+  sessionFile: string | null;
+  sessionId: string;
+  sessionName: string | null;
+  sessionMetadataPath: string | null;
+  availableCommands: string[];
+  availableOttoCommands: string[];
+  activeTools: string[];
+}
+
 export interface ExecResult {
   stdout: string;
   stderr: string;
@@ -176,6 +187,7 @@ export interface OttoOperatorUi {
   ): Promise<T | null>;
   select(title: string, options: string[]): Promise<string | null>;
   renderStatus(snapshot: OttoStatusSnapshot): void;
+  renderInspection(inspection: OttoRuntimeInspection): void;
 }
 
 export type OttoSessionControlStatus =

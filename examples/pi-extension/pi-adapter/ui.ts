@@ -2,6 +2,7 @@ import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 
 import type {
   OttoNotificationLevel,
+  OttoRuntimeInspection,
   OttoOperatorUi,
   OttoSessionSupport,
   OttoStatusSnapshot,
@@ -61,6 +62,24 @@ export class PiOperatorUi implements OttoOperatorUi {
         `Iteration: ${snapshot.iteration}`,
         `Failures: ${snapshot.failures}`,
         ...(sessionAlert ? [`Session alert: ${sessionAlert}`] : []),
+      ].join("\n"),
+      "info",
+    );
+  }
+
+  renderInspection(inspection: OttoRuntimeInspection): void {
+    if (!this.ctx.hasUI) return;
+
+    this.ctx.ui.notify(
+      [
+        `Cwd: ${inspection.cwd}`,
+        `Session file: ${inspection.sessionFile ?? "-"}`,
+        `Session id: ${inspection.sessionId}`,
+        `Session name: ${inspection.sessionName ?? "-"}`,
+        `Session metadata: ${inspection.sessionMetadataPath ?? "-"}`,
+        `Otto commands: ${inspection.availableOttoCommands.join(", ") || "-"}`,
+        `All commands: ${inspection.availableCommands.join(", ") || "-"}`,
+        `Active tools: ${inspection.activeTools.join(", ") || "-"}`,
       ].join("\n"),
       "info",
     );

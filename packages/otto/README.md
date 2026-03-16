@@ -92,7 +92,9 @@ Common commands:
 
 - `/otto-onboard`
 - `/otto-start`
+- `/otto-check`
 - `/otto-status`
+- `/otto-sessions`
 - `/otto-pause`
 - `/otto-resume`
 - `/otto-stop`
@@ -166,6 +168,16 @@ Use `workflows.commandModes` to opt specific workflows into `party` mode, for ex
 - `/bmad:td:validate-prd`
 
 This supports mixed autonomy rather than one fixed control philosophy.
+
+## Runtime Inspection And Recovery
+
+Otto now exposes explicit operator-facing diagnostics and recovery helpers:
+
+- `/otto-check` shows runtime state, session binding details, available Otto commands, and recently tracked Otto-managed sessions for the current run
+- `/otto-sessions` lists known Otto-managed sessions from `.pi/otto/sessions` so operators can inspect recovery targets
+- `/otto-resume <session-path-or-id>` can resume a paused run after first switching to a specific Otto-managed session
+
+Otto stores session metadata in `.pi/otto/runtime/sessions.json` and uses that index to reconnect runs with Otto-managed Pi sessions instead of relying only on the active chat context.
 
 ## Packaging Model
 

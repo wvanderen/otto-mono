@@ -253,8 +253,11 @@ export class SdkOttoSessionRuntime implements OttoSessionRuntime {
     const filtered = filter.runId
       ? mapped.filter((session) => session.runId === filter.runId)
       : mapped;
+    const sorted = [...filtered].sort((left, right) =>
+      right.updatedAt.localeCompare(left.updatedAt),
+    );
 
-    return filter.limit ? filtered.slice(0, filter.limit) : filtered;
+    return filter.limit ? sorted.slice(0, filter.limit) : sorted;
   }
 
   async recordSession(handle: OttoSessionHandle): Promise<OttoSessionHandle> {

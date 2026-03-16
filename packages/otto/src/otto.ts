@@ -50,7 +50,9 @@ import {
   type OttoPhase,
   type OttoQueueState,
   type OttoResultSourceKind,
+  type OttoRuntimeInspection,
   type OttoSessionHandle,
+  type OttoSessionInfo,
   type OttoStopCode,
   type OttoWorkflowMode,
 } from "./core";
@@ -460,6 +462,62 @@ const checkpointActionOptions = (checkpoint: Checkpoint): string[] => {
     `Fork from here | ${context} | ${summary}`,
     `Show details | ${checkpoint.action ?? checkpoint.command} | ${checkpoint.confidence}`,
   ];
+};
+
+const shortPath = (value: string | null, cwd: string): string => {
+  if (!value) return "-";
+  const relativeValue = relative(cwd, value);
+  if (
+    relativeValue === "" ||
+    (!relativeValue.startsWith("..") && !relativeValue.startsWith("../"))
+  ) {
+    return relativeValue || ".";
+  }
+  return value;
+};
+
+const formatSessionListLine = (
+  session: OttoSessionInfo,
+  cwd: string,
+): string => {
+  const parts = [
+    session.runId ?? "unbound",
+    shortPath(session.sessionPath, cwd),
+    new Date(session.updatedAt).toLocaleString(),
+  ];
+
+  if (session.summary) parts.push(shortText(session.summary, 64));
+
+  return parts.join(" | ");
+};
+
+const buildRuntimeInspection = (
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  metadataPath: string | null,
+): OttoRuntimeInspection => {
+  const commands = pi
+    .getCommands()
+    .map((command) => command.name)
+    .sort((left, right) => left.localeCompare(right));
+  const ottoCommands = commands.filter((command) =>
+    command.startsWith("otto-"),
+  );
+  const sessionName =
+    ctx.sessionManager.getSessionName?.() ?? pi.getSessionName();
+
+  return {
+    cwd: ctx.cwd,
+    sessionFile: ctx.sessionManager.getSessionFile(),
+    sessionId: ctx.sessionManager.getSessionId(),
+    sessionName: sessionName ?? null,
+    sessionMetadataPath: metadataPath,
+    availableCommands: commands,
+    availableOttoCommands: ottoCommands,
+    activeTools: pi
+      .getActiveTools()
+      .sort((left, right) => left.localeCompare(right)),
+  };
 };
 
 const extractAssistantText = (messages: unknown[]): string => {
@@ -1930,6 +1988,68 @@ export default function otto(pi: ExtensionAPI) {
     statusHandler,
   );
 
+  const checkHandler = async (
+    _args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> => {
+    const services = getServices(ctx);
+    const inspection = buildRuntimeInspection(
+      pi,
+      ctx,
+      state.lastSessionHandle?.metadataPath ?? null,
+    );
+
+    services.ui.renderInspection(inspection);
+
+    const sessions = await services.sessions.listSessions({
+      runId: state.runId ?? undefined,
+      limit: 8,
+    });
+
+    services.ui.notify(
+      [
+        `Tracked Otto sessions: ${sessions.length}`,
+        ...sessions.map((session) => formatSessionListLine(session, ctx.cwd)),
+      ].join("\n"),
+      "info",
+    );
+  };
+
+  registerOttoCommand(
+    "otto-check",
+    "bmad-auto-check",
+    "Inspect Otto runtime and tracked sessions",
+    checkHandler,
+  );
+
+  const sessionsHandler = async (
+    _args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> => {
+    const services = getServices(ctx);
+    const sessions = await services.sessions.listSessions({ limit: 20 });
+
+    if (sessions.length === 0) {
+      services.ui.notify("No Otto-managed sessions recorded yet.", "warning");
+      return;
+    }
+
+    services.ui.notify(
+      [
+        "Known Otto sessions:",
+        ...sessions.map((session) => formatSessionListLine(session, ctx.cwd)),
+      ].join("\n"),
+      "info",
+    );
+  };
+
+  registerOttoCommand(
+    "otto-sessions",
+    "bmad-auto-sessions",
+    "List Otto-managed sessions for recovery",
+    sessionsHandler,
+  );
+
   const pauseHandler = async (
     _args: string,
     ctx: ExtensionCommandContext,
@@ -1953,17 +2073,41 @@ export default function otto(pi: ExtensionAPI) {
   );
 
   const resumeHandler = async (
-    _args: string,
+    args: string,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
     if (!state.active || state.phase !== "paused") {
       getServices(ctx).ui.notify("Otto is not paused.", "warning");
       return;
     }
+
+    const requestedSession = args.trim();
+    if (requestedSession) {
+      try {
+        await ctx.waitForIdle();
+        const switched = await ctx.switchSession(requestedSession);
+        if (switched.cancelled) {
+          getServices(ctx).ui.notify(
+            `Otto resume could not switch to ${requestedSession}.`,
+            "warning",
+          );
+          return;
+        }
+      } catch (error) {
+        getServices(ctx).ui.notify(
+          `Otto resume session switch failed: ${error instanceof Error ? error.message : String(error)}`,
+          "warning",
+        );
+        return;
+      }
+    }
+
     await runtimeController.resume(
       ctx,
       NEXT_STEP_COMMAND,
-      resumeNextStepReason(),
+      requestedSession
+        ? `${resumeNextStepReason()} Operator selected ${requestedSession}.`
+        : resumeNextStepReason(),
     );
   };
 
